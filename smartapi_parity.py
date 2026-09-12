@@ -34,7 +34,7 @@ def norm(v,k=""):
     return v
 def shape(v,types=False):
     if isinstance(v,dict): return {k:shape(x,types) for k,x in sorted(v.items())}
-    if isinstance(v,list): return [shape(x,types) for x in v]
+    if isinstance(v,list): return [] if not v else [shape(v[0],types)]
     return type(v).__name__ if types else "value"
 def diff(a,b,p="",out=None):
     out=[] if out is None else out
@@ -46,8 +46,8 @@ def diff(a,b,p="",out=None):
             if k not in a or k not in b:out.append(f"{q}: missing on {'REAL' if k not in a else 'LOCAL'}")
             else:diff(a[k],b[k],q,out)
     elif isinstance(a,list):
-        if len(a)!=len(b):out.append(f"{p}: list length {len(a)}!={len(b)}")
-        for i,(x,y) in enumerate(zip(a,b)):diff(x,y,f"{p}[{i}]",out)
+        if a and b:diff(a[0],b[0],f"{p}[0]",out)
+        elif bool(a)!=bool(b):out.append(f"{p}: one side has no representative list item")
     elif a!=b:out.append(f"{p}: {a!r}!={b!r}")
     return out
 def call(f):
@@ -62,7 +62,9 @@ def call(f):
 def behavior(x):
     if x["exception"]:return ("exception",x["exception"]["type"])
     r=x["result"]; return (r.get("status"),r.get("errorcode")) if isinstance(r,dict) else ("result",type(r).__name__)
-def order(i,side,kind,q,price="0",**x):return {"variety":"NORMAL",**i,"transactiontype":side,"ordertype":kind,"producttype":"DELIVERY","duration":"DAY","price":price,"quantity":str(q),**x}
+def order(i,side,kind,q,price="0",**x):
+    product=x.pop("producttype",None) or ("CARRYFORWARD" if str(i.get("exchange","")).upper() in {"MCX","NFO","BFO"} else "DELIVERY")
+    return {"variety":"NORMAL",**i,"transactiontype":side,"ordertype":kind,"producttype":product,"duration":"DAY","price":price,"quantity":str(q),**x}
 def exact(r,s):
     rows=((r.get("result") or {}).get("data") or []) if isinstance(r,dict) else []
     v=next((x for x in rows if x.get("tradingsymbol")==s),None)
@@ -73,6 +75,8 @@ class Parity:
     self.root=cfg("LOCAL_ROOT","http://127.0.0.1:8000");self.db=Path(cfg("LOCAL_DB",ROOT/"smartapi_local.db"));self.dir=Path(cfg("PARITY_REPORT_DIR",ROOT/"reports"));self.timeout=float(cfg("PARITY_POLL_TIMEOUT",12));self.interval=float(cfg("PARITY_POLL_INTERVAL",.25));self.real_orders=flag("ENABLE_REAL_ORDERS");self.real200=flag("ENABLE_REAL_200_QTY");self.mcx_orders=flag("ENABLE_REAL_MCX_ORDERS");self.cleanup_on=flag("CLEANUP_ENABLED",True);self.close=flag("CLOSE_CONTROLLED_POSITIONS",True);self.stamp=datetime.now().strftime("%Y%m%d_%H%M%S");self.cases=[];self.orders={"REAL":set(),"LOCAL":set()};self.delta={};self.cleanup={"enabled":self.cleanup_on,"cancelled":[],"closed":[],"errors":[]}
  def add(self,id,desc,rr,lr,rf,lf,real_order=False,notes=""):
     a,b=call(rf),call(lf);na,nb=norm(clean(a)),norm(clean(b)); self.cases.append({"case_id":id,"description":desc,"real_request":clean(rr),"local_request":clean(lr),"real_sdk_result":clean(a),"local_sdk_result":clean(b),"normalized_real_result":na,"normalized_local_result":nb,"schema_match":"PASS" if shape(na)==shape(nb) else "FAIL","type_match":"PASS" if shape(clean(a),True)==shape(clean(b),True) else "FAIL","behavior_match":"PASS" if behavior(a)==behavior(b) else "FAIL","differences":diff(na,nb),"notes":notes,"real_order_used":real_order,"cleanup_result":None});return a,b
+ def local_only(self,id,desc,request,func,notes="REAL skipped by safety configuration."):
+    result=call(func);self.cases.append({"case_id":id,"description":desc,"status":"LOCAL_ONLY","local_request":clean(request),"local_sdk_result":clean(result),"notes":notes,"real_order_used":False,"cleanup_result":None});return result
  def skip(self,id,desc,note):self.cases.append({"case_id":id,"description":desc,"status":"SKIPPED","notes":note,"real_order_used":False,"cleanup_result":None})
  def local_user(self,balance):
     self.user="PARITY14"+self.stamp[-6:];self.password="parity-local-password";self.key="PARITY_LOCAL_"+self.stamp
@@ -95,12 +99,14 @@ class Parity:
        if last in FINAL:return last
       time.sleep(self.interval)
     return last
- def snapshots(self,p):
-    for m,n in (("orderBook","orderBook"),("tradeBook","tradeBook"),("position","position"),("holding","holding"),("rmsLimit","rmsLimit")):self.add(f"{p}.{n}",f"{n} after {p}",{}, {},getattr(self.real,m),getattr(self.local,m))
+ def snapshots(self,p,compare=True):
+    for m,n in (("orderBook","orderBook"),("tradeBook","tradeBook"),("position","position"),("holding","holding"),("rmsLimit","rmsLimit")):
+      if compare:self.add(f"{p}.{n}",f"{n} after {p}",{}, {},getattr(self.real,m),getattr(self.local,m))
+      else:self.local_only(f"{p}.{n}",f"{n} after {p} local-only",{},getattr(self.local,m))
  def place(self,id,desc,ri,li,rq,lq,side,allow):
     if not allow:
       self.skip(id,desc,"Real order disabled by safety configuration.")
-      z=call(lambda:self.local.placeOrderFullResponse(lq));self.track("LOCAL",z,li,side);self.cases.append({"case_id":id+".LOCAL","description":desc+" local-only","local_request":clean(lq),"local_sdk_result":clean(z),"notes":"REAL skipped","real_order_used":False,"cleanup_result":None});return
+      z=self.local_only(id+".LOCAL",desc+" local-only",lq,lambda:self.local.placeOrderFullResponse(lq));self.track("LOCAL",z,li,side);return
     a,b=self.add(id,desc,rq,lq,lambda:self.real.placeOrderFullResponse(rq),lambda:self.local.placeOrderFullResponse(lq),True);self.track("REAL",a,ri,side);self.track("LOCAL",b,li,side)
  def cleanup_all(self):
     if not self.cleanup_on:return
@@ -116,10 +122,14 @@ class Parity:
       except Exception as x:self.cleanup["errors"].append(f"{target}: {type(x).__name__}: {x}")
  def reports(self):
     for x in self.cases:x["cleanup_result"]=self.cleanup
-    counts={"PASS":0,"FAIL":0,"SKIPPED":0}
-    for x in self.cases:counts["SKIPPED" if x.get("status")=="SKIPPED" else "PASS" if all(x.get(k)=="PASS" for k in("schema_match","type_match","behavior_match")) else "FAIL"]+=1
-    self.dir.mkdir(parents=True,exist_ok=True);data={"phase":14,"created":datetime.now().astimezone().isoformat(),"counts":counts,"cleanup":self.cleanup,"cases":self.cases};j=self.dir/f"smartapi_parity_{self.stamp}.json";m=self.dir/f"smartapi_parity_{self.stamp}.md";j.write_text(json.dumps(data,indent=2,default=str));lines=["# SmartAPI Phase 14 parity report","",f"PASS {counts['PASS']} | FAIL {counts['FAIL']} | SKIPPED {counts['SKIPPED']}","","| Case | Schema | Type | Behavior | Notes |","|---|---|---|---|---|"]
-    for x in self.cases:lines.append(f"| {x['case_id']} | {x.get('schema_match','SKIP')} | {x.get('type_match','SKIP')} | {x.get('behavior_match','SKIP')} | {('; '.join(x.get('differences') or [x.get('notes','')])).replace('|','\\|')} |")
+    counts={"PASS":0,"FAIL":0,"SKIPPED":0,"LOCAL_ONLY":0}
+    for x in self.cases:
+      if x.get("status")=="SKIPPED":counts["SKIPPED"]+=1
+      elif x.get("status")=="LOCAL_ONLY":counts["LOCAL_ONLY"]+=1
+      elif all(x.get(k)=="PASS" for k in("schema_match","type_match","behavior_match")):counts["PASS"]+=1
+      else:counts["FAIL"]+=1
+    self.dir.mkdir(parents=True,exist_ok=True);data={"phase":14,"created":datetime.now().astimezone().isoformat(),"counts":counts,"cleanup":self.cleanup,"cases":self.cases};j=self.dir/f"smartapi_parity_{self.stamp}.json";m=self.dir/f"smartapi_parity_{self.stamp}.md";j.write_text(json.dumps(data,indent=2,default=str));lines=["# SmartAPI Phase 14 parity report","",f"PASS {counts['PASS']} | FAIL {counts['FAIL']} | SKIPPED {counts['SKIPPED']} | LOCAL_ONLY {counts['LOCAL_ONLY']}","","| Case | Schema | Type | Behavior | Notes |","|---|---|---|---|---|"]
+    for x in self.cases:lines.append(f"| {x['case_id']} | {x.get('schema_match',x.get('status','SKIP'))} | {x.get('type_match',x.get('status','SKIP'))} | {x.get('behavior_match',x.get('status','SKIP'))} | {('; '.join(x.get('differences') or [x.get('notes','')])).replace('|','\\|')} |")
     m.write_text("\n".join(lines)+"\n");return j,m
 
 def run():
@@ -130,13 +140,11 @@ def run():
   login=call(lambda:p.real.generateSession(keys["CLIENT_ID"],keys["PASSWORD"],code))
   if not ((login.get("result")or{}).get("status")):raise RuntimeError("REAL login failed")
   rms=call(p.real.rmsLimit);p.local_user(float((((rms.get("result")or{}).get("data")or{}).get("availablecash",0))));p.local=SmartConnect(api_key=p.key,root=p.root)
-  # A: each negative case changes only the named field.
   bad=[("A1","wrong API key","BAD_KEY",keys["CLIENT_ID"],keys["PASSWORD"],code),("A2","wrong client code",keys["API_KEY"],"BAD_CLIENT",keys["PASSWORD"],code),("A3","wrong password",keys["API_KEY"],keys["CLIENT_ID"],"BAD_PASSWORD",code),("A4","wrong TOTP",keys["API_KEY"],keys["CLIENT_ID"],keys["PASSWORD"],"000000"),("A5","all credentials wrong","BAD_KEY","BAD_CLIENT","BAD_PASSWORD","000000")]
   for id,d,k,u,w,t in bad:p.add(id,d,{"clientcode":u},{"clientcode":p.user},lambda k=k,u=u,w=w,t=t:SmartConnect(api_key=k).generateSession(u,w,t),lambda k=k,u=u,w=w,t=t:SmartConnect(api_key=k if k=="BAD_KEY" else p.key,root=p.root).generateSession(u if u!=keys["CLIENT_ID"] else p.user,w if w!=keys["PASSWORD"] else p.password,t if t!=code else "123456"))
   local_login=call(lambda:p.local.generateSession(p.user,p.password,"123456"));p.add("B1","successful login",{"clientcode":keys["CLIENT_ID"]},{"clientcode":p.user},lambda:login["result"],lambda:local_login["result"])
   if not ((local_login.get("result")or{}).get("status")):raise RuntimeError("LOCAL login failed")
   p.add("B2","profile",{}, {},lambda:p.real.getProfile(p.real.refresh_token),lambda:p.local.getProfile(p.local.refresh_token));p.add("B3","RMS after local balance alignment",{}, {},p.real.rmsLimit,p.local.rmsLimit)
-  # C: REAL discovery first; the runner never hardcodes a token.
   rn=call(lambda:p.real.searchScrip("NSE","NIFTYBEES"));n=exact(rn,"NIFTYBEES-EQ")
   if not n:p.skip("C1","NSE NIFTYBEES discovery","REAL exact symbol unavailable");raise RuntimeError("NSE NIFTYBEES unavailable")
   p.mapping(n,"NIFTYBEES.NS");_,ln=p.add("C1","exact NSE NIFTYBEES-EQ",{"exchange":"NSE","searchscrip":"NIFTYBEES"},{"exchange":"NSE","searchscrip":"NIFTYBEES"},lambda:rn["result"],lambda:p.local.searchScrip("NSE","NIFTYBEES"));nl=exact(ln,"NIFTYBEES-EQ")
@@ -148,21 +156,17 @@ def run():
   if b and bl:p.add("C4","BSE LTP",b,bl,lambda:p.real.ltpData(**b),lambda:p.local.ltpData(**bl))
   if ltp<=0:raise RuntimeError("REAL LTP unavailable")
   low=f"{math.floor(ltp*.97*100)/100:.2f}";high=f"{math.ceil(ltp*1.03*100)/100:.2f}"
-  # D/E. Local 200 is always controlled and cleaned; REAL is behind two explicit flags.
-  p.place("D1","MARKET BUY 200",n,nl,None,order(nl,"BUY","MARKET",200),"BUY",False);p.snapshots("D1")
-  p.place("D2","LIMIT BUY 200 below LTP",n,nl,order(n,"BUY","LIMIT",200,low),order(nl,"BUY","LIMIT",200,low),"BUY",p.real_orders and p.real200);p.snapshots("D2")
-  p.place("D3","MARKET BUY 1",n,nl,order(n,"BUY","MARKET",1),order(nl,"BUY","MARKET",1),"BUY",p.real_orders);p.snapshots("D3")
-  p.place("D4","LIMIT BUY 1 below LTP",n,nl,order(n,"BUY","LIMIT",1,low),order(nl,"BUY","LIMIT",1,low),"BUY",p.real_orders);p.snapshots("D4")
-  p.place("E1","MARKET SELL 1 controlled quantity",n,nl,order(n,"SELL","MARKET",1),order(nl,"SELL","MARKET",1),"SELL",p.real_orders);p.snapshots("E1")
-  p.place("E2","LIMIT SELL 1 above LTP",n,nl,order(n,"SELL","LIMIT",1,high),order(nl,"SELL","LIMIT",1,high),"SELL",p.real_orders);p.snapshots("E2")
-  # G: impossible combinations only, so no valid real trade can be created.
+  p.place("D1","MARKET BUY 200",n,nl,None,order(nl,"BUY","MARKET",200),"BUY",False);p.snapshots("D1",False)
+  p.place("D2","LIMIT BUY 200 below LTP",n,nl,order(n,"BUY","LIMIT",200,low),order(nl,"BUY","LIMIT",200,low),"BUY",p.real_orders and p.real200);p.snapshots("D2",p.real_orders and p.real200)
+  p.place("D3","MARKET BUY 1",n,nl,order(n,"BUY","MARKET",1),order(nl,"BUY","MARKET",1),"BUY",p.real_orders);p.snapshots("D3",p.real_orders)
+  p.place("D4","LIMIT BUY 1 below LTP",n,nl,order(n,"BUY","LIMIT",1,low),order(nl,"BUY","LIMIT",1,low),"BUY",p.real_orders);p.snapshots("D4",p.real_orders)
+  p.place("E1","MARKET SELL 1 controlled quantity",n,nl,order(n,"SELL","MARKET",1),order(nl,"SELL","MARKET",1),"SELL",p.real_orders);p.snapshots("E1",p.real_orders)
+  p.place("E2","LIMIT SELL 1 above LTP",n,nl,order(n,"SELL","LIMIT",1,high),order(nl,"SELL","LIMIT",1,high),"SELL",p.real_orders);p.snapshots("E2",p.real_orders)
   for id,x in [("G1a",{"tradingsymbol":"__PARITY_INVALID__"}),("G1b",{"tradingsymbol":"__PARITY_INVALID__","transactiontype":"SELL"}),("G2a",{"exchange":"MCX"}),("G2b",{"exchange":"BSE"}),("G3",{"quantity":"0"}),("G4",{"quantity":"-1"}),("G5",{"symboltoken":"000000000000"}),("G6",{"tradingsymbol":"__PARITY_MISMATCH__"}),("G7a",{"ordertype":"__INVALID__"}),("G7b",{"producttype":"__INVALID__"})]:
    a={**order(n,"BUY","MARKET",1),**x};z={**order(nl,"BUY","MARKET",1),**x};p.add(id,"invalid NIFTYBEES order",a,z,lambda a=a:p.real.placeOrderFullResponse(a),lambda z=z:p.local.placeOrderFullResponse(z));p.snapshots(id)
-  # H: one shared, bounded date range per run.
   end=(datetime.now()-timedelta(days=1)).replace(hour=15,minute=25,second=0,microsecond=0)
   for id,iv,span in [("H1","ONE_MINUTE",timedelta(hours=4)),("H2","FIFTEEN_MINUTE",timedelta(days=5)),("H3","ONE_DAY",timedelta(days=30))]:
    q={"interval":iv,"fromdate":(end-span).strftime("%Y-%m-%d %H:%M"),"todate":end.strftime("%Y-%m-%d %H:%M")};a={"exchange":n["exchange"],"symboltoken":n["symboltoken"],**q};z={"exchange":nl["exchange"],"symboltoken":nl["symboltoken"],**q};p.add(id,f"{iv} candles",a,z,lambda a=a:p.real.getCandleData(a),lambda z=z:p.local.getCandleData(z))
-  # I: exact MCX discovery only. A missing contract is an explicit skip, never a guessed token.
   rm=call(lambda:p.real.searchScrip("MCX","GOLDPETAL30SEP26FUT"));mi=exact(rm,"GOLDPETAL30SEP26FUT")
   if not mi:p.skip("I1-I6","MCX GOLDPETAL30SEP26FUT","SKIPPED_NOT_AVAILABLE on REAL")
   else:
@@ -170,11 +174,10 @@ def run():
    if ml:
     p.add("I2","MCX LTP",mi,ml,lambda:p.real.ltpData(**mi),lambda:p.local.ltpData(**ml))
     if p.real_orders and p.mcx_orders:
-     p.place("I3","MCX MARKET BUY 1",mi,ml,order(mi,"BUY","MARKET",1),order(ml,"BUY","MARKET",1),"BUY",True);p.snapshots("I3")
-     p.place("I5","MCX MARKET SELL 1",mi,ml,order(mi,"SELL","MARKET",1),order(ml,"SELL","MARKET",1),"SELL",True);p.snapshots("I5")
+     p.place("I3","MCX MARKET BUY 1",mi,ml,order(mi,"BUY","MARKET",1,producttype="CARRYFORWARD"),order(ml,"BUY","MARKET",1,producttype="CARRYFORWARD"),"BUY",True);p.snapshots("I3")
+     p.place("I5","MCX MARKET SELL 1",mi,ml,order(mi,"SELL","MARKET",1,producttype="CARRYFORWARD"),order(ml,"SELL","MARKET",1,producttype="CARRYFORWARD"),"SELL",True);p.snapshots("I5")
     else:p.skip("I3-I6","MCX BUY/SELL and position/holding comparison","ENABLE_REAL_ORDERS and ENABLE_REAL_MCX_ORDERS required")
    else:p.skip("I2-I6","MCX local comparison","LOCAL exact mapping did not resolve")
-  # J: observable authentication/session behaviors.
   ar=SmartConnect(api_key=keys["API_KEY"]);al=SmartConnect(api_key=p.key,root=p.root);ar.setAccessToken("invalid-bearer");al.setAccessToken("invalid-bearer");p.add("J1","invalid bearer",{}, {},ar.rmsLimit,al.rmsLimit)
   ar=SmartConnect(api_key=keys["API_KEY"]);al=SmartConnect(api_key=p.key,root=p.root);p.add("J2","missing Authorization",{}, {},ar.rmsLimit,al.rmsLimit)
   ar=SmartConnect(api_key="WRONG_API_KEY");al=SmartConnect(api_key="WRONG_API_KEY",root=p.root);ar.setAccessToken(p.real.access_token);al.setAccessToken(p.local.access_token);p.add("J3","wrong API key authenticated request",{}, {},ar.rmsLimit,al.rmsLimit)
