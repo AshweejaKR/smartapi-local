@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% block title %}Market data - Local SmartAPI{% endblock %}
+{% block content %}
+  <h1>Market data</h1>
+  <p>Choose a symbol to control its source and HIJACK values. Changes apply immediately.</p>
+
+  <form method="get" action="/admin/market">
+    <label>Symbol
+      <select name="symboltoken" onchange="this.form.submit()">
+        {% for symbol in symbols %}
+        <option value="{{ symbol.symboltoken }}" data-exchange="{{ symbol.exchange }}"
+          {% if selected and symbol.exchange == selected.exchange and symbol.symboltoken == selected.symboltoken %}selected{% endif %}>
+          {{ symbol.exchange }} / {{ symbol.tradingsymbol }} ({{ symbol.symboltoken }})
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if selected %}<input type="hidden" name="exchange" value="{{ selected.exchange }}">{% endif %}
+    <noscript><button>Load symbol</button></noscript>
+  </form>
+
+  {% if selected %}
+  <h2>{{ selected.exchange }} / {{ selected.tradingsymbol }}</h2>
+  <p>Current source: <strong>{{ selected.mode }}</strong></p>
+  <form method="post" action="/admin/market">
+    <input type="hidden" name="exchange" value="{{ selected.exchange }}">
+    <input type="hidden" name="symboltoken" value="{{ selected.symboltoken }}">
+    <label>Mode
+      <select name="mode">
+        <option value="YAHOO" {% if selected.mode == "YAHOO" %}selected{% endif %}>YAHOO</option>
+        <option value="HIJACK" {% if selected.mode == "HIJACK" %}selected{% endif %}>HIJACK</option>
+      </select>
+    </label>
+    <div class="grid">
+      <label>LTP <input name="ltp" type="number" step="any" value="{{ selected.ltp if selected.ltp is not none else '' }}"></label>
+      <label>Volume <input name="volume" type="number" min="0" step="1" value="{{ selected.volume if selected.volume is not none else '' }}"></label>
+      <label>Open <input name="open" type="number" step="any" value="{{ selected.open if selected.open is not none else '' }}"></label>
+      <label>High <input name="high" type="number" step="any" value="{{ selected.high if selected.high is not none else '' }}"></label>
+      <label>Low <input name="low" type="number" step="any" value="{{ selected.low if selected.low is not none else '' }}"></label>
+      <label>Close <input name="close" type="number" step="any" value="{{ selected.close if selected.close is not none else '' }}"></label>
+    </div>
+    <button>Save source and quote</button>
+  </form>
+
+  <h2>HIJACK candles</h2>
+  <form method="post" action="/admin/market">
+    <input type="hidden" name="action" value="save_candle">
+    <input type="hidden" name="exchange" value="{{ selected.exchange }}">
+    <input type="hidden" name="symboltoken" value="{{ selected.symboltoken }}">
+    <div class="grid">
+      <label>Timestamp <input name="timestamp" type="datetime-local" required></label>
+      <label>Open <input name="candle_open" type="number" step="any" required></label>
+      <label>High <input name="candle_high" type="number" step="any" required></label>
+      <label>Low <input name="candle_low" type="number" step="any" required></label>
+      <label>Close <input name="candle_close" type="number" step="any" required></label>
+      <label>Volume <input name="candle_volume" type="number" min="0" step="1" required></label>
+    </div>
+    <button>Save / replace candle</button>
+  </form>
+  <table>
+    <tr><th>Timestamp</th><th>OHLCV</th><th></th></tr>
+    {% for candle in candles %}
+    <tr>
+      <td>{{ candle[0] }}</td>
+      <td>{{ candle[1] }}, {{ candle[2] }}, {{ candle[3] }}, {{ candle[4] }}, {{ candle[5] }}</td>
+      <td>
+        <form method="post" action="/admin/market">
+          <input type="hidden" name="action" value="delete_candle">
+          <input type="hidden" name="exchange" value="{{ selected.exchange }}">
+          <input type="hidden" name="symboltoken" value="{{ selected.symboltoken }}">
+          <input type="hidden" name="timestamp" value="{{ candle[0] }}">
+          <button>Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="3" class="muted">No manual candles saved.</td></tr>{% endfor %}
+  </table>
+  {% endif %}
+
+  <h2>Sources</h2>
+  <table>
+    <tr><th>Exchange</th><th>Symbol</th><th>Token</th><th>Source</th></tr>
+    {% for symbol in symbols %}
+    <tr><td>{{ symbol.exchange }}</td><td>{{ symbol.tradingsymbol }}</td><td>{{ symbol.symboltoken }}</td><td>{{ symbol.mode }}</td></tr>
+    {% endfor %}
+  </table>
+{% endblock %}

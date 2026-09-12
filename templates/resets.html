@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Reset controls - Local SmartAPI{% endblock %}
+{% block content %}
+<h1>Reset controls</h1>
+<p>Each operation affects all users and requires confirmation on the next page.</p>
+<table><tr><th>Operation</th><th>Effect</th></tr>
+{% for action, reset in resets.items() %}<tr><td><a href="/admin/resets/{{ action }}">{{ reset[0] }}</a></td><td>{{ reset[1] }}</td></tr>{% endfor %}
+</table>
+{% endblock %}

@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Confirm reset - Local SmartAPI{% endblock %}
+{% block content %}
+{% if reset %}
+<h1>{{ reset[0] }}</h1>
+<p class="danger">{{ reset[1] }}</p>
+<p>This affects all users and cannot be undone.</p>
+{% if error %}<p class="errors">{{ error }}</p>{% endif %}
+<form method="post" action="/admin/resets/{{ action }}">
+<label>Type RESET to confirm <input name="confirm" required pattern="RESET" autocomplete="off"></label>
+<button type="submit">Confirm {{ reset[0]|lower }}</button> <a href="/admin/resets">Cancel</a>
+</form>
+{% else %}<h1>Unknown reset operation</h1><a href="/admin/resets">Reset controls</a>{% endif %}
+{% endblock %}

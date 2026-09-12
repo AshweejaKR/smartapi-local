@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+jinja2
+pytest
+httpx
+smartapi-python
+yfinance

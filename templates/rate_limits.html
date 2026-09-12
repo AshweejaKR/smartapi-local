@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% from "components.html" import counters_table %}
+{% block title %}Rate limits - Local SmartAPI{% endblock %}
+{% block content %}
+<h1>Rate limits</h1>
+<p class="muted">Limits are per client code. Use 0 for unlimited. Saving clears current counters.</p>
+<p><a href="/admin/resets/rate-limits">Restore defaults</a></p>
+<form method="post" class="grid">
+<label>Scope <select name="scope"><option value="endpoint">Endpoint</option><option value="group">Route group</option></select></label>
+<label>Target <input name="target" required placeholder="/rest/... or orders"></label>
+<label>Per second <input name="per_second" type="number" min="0" value="0" required></label>
+<label>Per minute <input name="per_minute" type="number" min="0" value="0" required></label>
+<label>Per hour <input name="per_hour" type="number" min="0" value="0" required></label>
+<label><input name="enabled" type="checkbox" checked> Enabled</label><button type="submit">Save limit</button>
+</form>
+<div class="table-scroll"><table>
+<tr><th>Scope</th><th>Target</th><th>Second</th><th>Minute</th><th>Hour</th><th>Enabled</th><th>Save</th></tr>
+{% for row in limits %}{% set form_id = 'limit-' ~ loop.index %}
+<tr><td>{{ row.scope }}</td><td>{{ row.target }}</td>
+{% for field in ['per_second', 'per_minute', 'per_hour'] %}<td><input form="{{ form_id }}" name="{{ field }}" aria-label="{{ row.target }} {{ field }}" type="number" min="0" value="{{ row[field] }}" required></td>{% endfor %}
+<td><input form="{{ form_id }}" name="enabled" aria-label="Enable {{ row.target }}" type="checkbox" {% if row.enabled %}checked{% endif %}></td>
+<td><form id="{{ form_id }}" method="post"><input type="hidden" name="scope" value="{{ row.scope }}"><input type="hidden" name="target" value="{{ row.target }}"><button type="submit">Save</button></form></td></tr>
+{% endfor %}</table></div>
+<h2>Current request counters</h2>{{ counters_table(counters) }}
+{% endblock %}

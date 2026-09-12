@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% from "components.html" import audit_table %}
+{% block title %}Audit - Local SmartAPI{% endblock %}
+{% block content %}
+<h1>Recent audit entries</h1>
+<p>Latest 100 Admin, REST, order and fault events. Times use the server's local clock.</p>
+{{ audit_table(entries) }}
+{% endblock %}

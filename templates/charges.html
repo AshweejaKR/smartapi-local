@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Charges - Local SmartAPI{% endblock %}
+{% block content %}
+  <h1>Transaction charges</h1>
+  <p><a href="/admin/resets/charges">Restore defaults</a></p>
+  <p>Settings apply to new fills. Flat amounts are per fill; a percentage rate of 1 means 1%.</p>
+  <p>Turnover is fill price × quantity. GST can use turnover or brokerage + exchange + SEBI charges.</p>
+  <p class="muted">Initial rates are zero simulator defaults. Enter the values you want to simulate.</p>
+  <form method="post" action="/admin/charges">
+    <table>
+      <tr><th>Charge</th><th>Enabled</th><th>Calculation</th><th>Rate / amount</th><th>Side</th><th>Percentage basis</th></tr>
+      {% for charge in charges %}
+      <tr>
+        <td>{{ charge.label }}</td>
+        <td><input type="checkbox" name="{{ charge.name }}_enabled" aria-label="Enable {{ charge.label }}" {% if charge.enabled %}checked{% endif %}></td>
+        <td><select name="{{ charge.name }}_calculation" aria-label="{{ charge.label }} calculation">
+          {% for value in ["FLAT", "PERCENTAGE"] %}
+          <option value="{{ value }}" {% if charge.calculation == value %}selected{% endif %}>{{ value|title }}</option>
+          {% endfor %}
+        </select></td>
+        <td><input type="number" name="{{ charge.name }}_rate" aria-label="{{ charge.label }} rate" value="{{ charge.rate }}" min="0" max="1000000000" step="any" required></td>
+        <td><select name="{{ charge.name }}_side" aria-label="{{ charge.label }} side">
+          {% for value in ["BUY", "SELL", "BOTH"] %}
+          <option value="{{ value }}" {% if charge.side == value %}selected{% endif %}>{{ value|title }}</option>
+          {% endfor %}
+        </select></td>
+        <td>
+          {% if charge.name == "gst" %}
+          <select name="gst_basis" aria-label="GST percentage basis">
+            <option value="TURNOVER" {% if charge.basis == "TURNOVER" %}selected{% endif %}>Turnover</option>
+            <option value="SERVICE_FEES" {% if charge.basis == "SERVICE_FEES" %}selected{% endif %}>Brokerage + exchange + SEBI</option>
+          </select>
+          {% else %}Turnover{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    <button type="submit">Save charges</button>
+  </form>
+{% endblock %}
+

@@ -1,0 +1,55 @@
+Local SmartAPI-Compatible REST Server
+=====================================
+
+Purpose
+-------
+This project is a small Python/FastAPI simulator for the Angel One SmartAPI REST API.
+The official smartapi-python SDK connects by passing only a local root URL to SmartConnect.
+
+Main components
+---------------
+- app.py: FastAPI application, database startup, SDK route inventory, middleware and server lifecycle.
+- auth.py: SQLite-backed dummy users, fixed TOTP authentication, sessions, token expiry and logout.
+- market.py: Yahoo Finance provider, symbol mappings, caching and per-symbol HIJACK overrides/candles.
+- orders.py: MARKET and LIMIT order lifecycle, reservations, delayed fills, cancellation and modification.
+- portfolio.py: Persistent funds, RMS, trades, positions and holdings.
+- charges.py: Configurable brokerage, taxes and other charge calculations.
+- rate_limit.py: SQLite-backed endpoint/group request limits and live counters.
+- fault.py: Temporary REST outage, timeout, HTTP error and authentication fault simulation.
+- phase11.py: Deterministic handlers for the remaining SmartAPI SDK routes.
+- admin.py and templates/: Basic Jinja2 Admin UI, monitoring, audit log, configuration and reset controls.
+
+Local test setting
+------------------
+Set SMARTAPI_DISABLE_TOTP=1 before starting the server to accept any TOTP value.
+TOTP verification is enabled by default.
+
+Admin UI
+--------
+Open /admin on the same server. It shows funds, market source, orders, open orders, positions,
+holdings, trades, charges, rate-limit status, active faults and recent audit entries.
+Destructive resets require typing RESET for confirmation.
+
+Testing
+-------
+The tests use the official smartapi-python SDK over real HTTP against isolated SQLite databases.
+Coverage includes authentication, token expiry and refresh, all current SDK routes, Yahoo and HIJACK
+market data, candles, delayed MARKET fills, LIMIT triggers, cancel/modify, charges, insufficient
+funds, rate limits, outages, audit logging, resets and actual process restart persistence.
+
+Verification
+------------
+- Full regression suite: 136 passed.
+- Live Yahoo SDK verification: 1 passed.
+- Working tree was clean after commit.
+
+Plan and history
+----------------
+- Plan: SMARTAPI_LOCAL_SERVER_PLAN.md
+- Latest commit: 3d3c88a Implement Phases 12-13 admin monitoring and SDK regression coverage
+- Git history contains the implementation commits for Phases 1 through 13.
+
+Note
+----
+Some older phase metadata in SMARTAPI_LOCAL_SERVER_PLAN.md still uses inconsistent TODO or Complete
+labels even though the corresponding implementation commits are present.

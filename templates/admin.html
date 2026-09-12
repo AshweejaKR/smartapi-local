@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "components.html" import table, audit_table, counters_table %}
+{% block title %}Dashboard - Local SmartAPI{% endblock %}
+{% block content %}
+<h1>Admin dashboard</h1>
+<p>{{ summary.users }} users ({{ summary.enabled }} enabled) ? Available cash: <strong>{{ "%.2f"|format(total) }}</strong> ? <a href="/admin/resets">Reset controls</a> ? <a href="/admin">Refresh</a></p>
+<p class="muted">Tables show stored simulator state. Position and holding last prices are the latest stored fill prices. Refresh to update monitoring.</p>
+<div class="dashboard-grid">
+<section><h2>Current funds <a href="/admin/account">Manage</a></h2>
+{{ table(accounts, ['client_code', 'available_balance', 'used_funds', 'available_cash', 'total_charges']) }}</section>
+<section><h2>Market source <a href="/admin/market">Manage</a></h2>
+{{ table(symbols, ['exchange', 'tradingsymbol', 'mode', 'ltp', 'volume']) }}</section>
+</div>
+{% for section in sections %}
+<section><h2>{{ section.title }} ({{ section.count }}) <a href="/admin/monitor/{{ section.kind }}">View all</a></h2>
+{{ table(section.rows, section.columns) }}</section>
+{% endfor %}
+<div class="dashboard-grid">
+<section><h2>Charge configuration <a href="/admin/charges">Edit</a></h2>
+{{ table(charges, ['label', 'rate', 'calculation', 'side', 'enabled']) }}</section>
+<section><h2>Active faults <a href="/admin/faults">Manage</a></h2>
+{% if active %}<p class="danger">{{ active.mode }} is active. REST recovers automatically when the configured duration ends.</p>
+<form method="post" action="/admin/faults/clear"><button>Clear fault</button></form>
+{% else %}<p>No active fault.</p>{% endif %}
+<h2>Rate-limit configuration <a href="/admin/rate-limits">Edit</a></h2>
+<p>{{ limits|length }} rules; {{ limits|selectattr('enabled')|list|length }} enabled. Live counters below show admitted requests per client and window.</p>
+</section></div>
+<section><h2>Rate-limit status</h2>{{ counters_table(counters) }}</section>
+<section><h2>Recent audit entries <a href="/admin/audit">View recent 100</a></h2>{{ audit_table(entries) }}</section>
+{% endblock %}

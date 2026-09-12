@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if editing else "Add" }} user - Local SmartAPI{% endblock %}
+{% block content %}
+  <h1>{{ "Edit" if editing else "Add" }} dummy user</h1>
+  {% if errors %}<ul class="errors">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+  <form method="post" action="{% if editing %}/admin/users/{{ old_client_code|default(user.client_code) }}/edit{% else %}/admin/users/add{% endif %}">
+    <label>Client code <input name="client_code" required maxlength="32" value="{{ user.client_code|default('') }}"></label>
+    <label>Password <input type="password" name="password" {% if not editing %}required{% endif %} minlength="4" autocomplete="new-password"></label>
+    {% if editing %}<p class="muted">Leave password blank to keep the current password.</p>{% endif %}
+    <label>API key / X-PrivateKey <input name="api_key" required maxlength="128" value="{{ user.api_key|default('') }}"></label>
+    <label>Fixed TOTP <input name="totp" required inputmode="numeric" pattern="[0-9]{6}" maxlength="6" value="{{ user.totp|default('') }}"></label>
+    <label>Name <input name="name" required value="{{ user.name|default('') }}"></label>
+    <label>Email <input type="email" name="email" required value="{{ user.email|default('') }}"></label>
+    <label>Mobile <input name="mobile" required value="{{ user.mobile|default('') }}"></label>
+    <button type="submit">Save user</button> <a href="/admin/users">Cancel</a>
+  </form>
+{% endblock %}

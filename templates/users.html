@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Users - Local SmartAPI{% endblock %}
+{% block content %}
+  <h1>Dummy users</h1>
+  <p><a href="/admin/users/add">Add user</a></p>
+  <table>
+    <tr><th>Client code</th><th>Name</th><th>API key</th><th>Fixed TOTP</th><th>Contact</th><th>Status</th><th>Actions</th></tr>
+    {% for user in users %}
+    <tr>
+      <td>{{ user.client_code }}</td><td>{{ user.name }}</td><td>{{ user.api_key }}</td><td>{{ user.totp }}</td>
+      <td>{{ user.email }}<br>{{ user.mobile }}</td><td>{{ "Enabled" if user.enabled else "Disabled" }}</td>
+      <td>
+        <a href="/admin/users/{{ user.client_code }}/edit">Edit</a>
+        <form class="inline" method="post" action="/admin/users/{{ user.client_code }}/toggle"><button>{{ "Disable" if user.enabled else "Enable" }}</button></form>
+        <form class="inline" method="post" action="/admin/users/{{ user.client_code }}/delete" onsubmit="return confirm('Delete this user and balance?')"><button class="danger">Delete</button></form>
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="7">No users configured.</td></tr>{% endfor %}
+  </table>
+  <p class="muted">Passwords are stored as hashes and are never displayed.</p>
+{% endblock %}

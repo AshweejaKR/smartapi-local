@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% from "components.html" import table %}
+{% block title %}{{ title }} - Local SmartAPI{% endblock %}
+{% block content %}
+<h1>{{ title }}</h1>
+<p>{{ count }} entries. Page {{ page }}, up to 100 per page. Last prices are stored fill prices.</p>
+{{ table(rows, columns) }}
+{% if page > 1 %}<a href="?page={{ page - 1 }}">Previous</a>{% endif %}
+{% if page * 100 < count %}<a href="?page={{ page + 1 }}">Next</a>{% endif %}
+{% endblock %}
