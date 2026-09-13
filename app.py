@@ -1,7 +1,9 @@
 """Small local SmartAPI-compatible REST server."""
 import asyncio
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
+import socket
 import sqlite3
 import time
 
@@ -46,6 +48,29 @@ def init_db():
     init_phase11(DB_PATH)
     init_rate_limits(DB_PATH)
     init_faults(DB_PATH)
+
+
+def server_addresses():
+    host = os.getenv("SMARTAPI_HOST", "0.0.0.0")
+    port = int(os.getenv("SMARTAPI_PORT", "8000"))
+    public = os.getenv("SMARTAPI_PUBLIC_HOST", "").strip()
+    try:
+        network = socket.gethostbyname(socket.gethostname())
+    except OSError:
+        network = "127.0.0.1"
+
+    base = f"http://{public or network}:{port}"
+    print("\n" + "=" * 44)
+    print(" SmartAPI Local Server")
+    print("=" * 44)
+    print(f"Bind       : {host}:{port}")
+    print(f"Local      : http://127.0.0.1:{port}")
+    print(f"Network    : http://{network}:{port}")
+    if public:
+        print(f"Public     : http://{public}:{port}")
+    print(f"Admin      : {base}/admin")
+    print(f"Health     : {base}/health")
+    print("=" * 44 + "\n")
 
 
 def success(data=None, message="SUCCESS"):
@@ -135,6 +160,7 @@ async def dispatch_rest(request: Request):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    server_addresses()
     checker = asyncio.create_task(order_checker())
     try:
         yield
@@ -144,6 +170,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Local SmartAPI", lifespan=lifespan)
 app.include_router(admin_router)
+
 
 @app.middleware("http")
 async def smartapi_faults(request: Request, call_next):
@@ -166,8 +193,6 @@ async def smartapi_rate_limit(request: Request, call_next):
             request.state.rate_limited = True
             return failure
     return await call_next(request)
-
-
 
 
 @app.middleware("http")
@@ -201,3 +226,13 @@ async def health():
 
 for method, path, name in SDK_ROUTES:
     app.add_api_route(path, dispatch_rest, methods=[method], name=name)
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host=os.getenv("SMARTAPI_HOST", "0.0.0.0"),
+        port=int(os.getenv("SMARTAPI_PORT", "8000")),
+    )
