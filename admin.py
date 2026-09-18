@@ -16,7 +16,6 @@ from auth import invalidate_sessions, password_hash
 from charges import CHARGE_FIELDS, init_charges, pnl_values
 from fault import LOCK as FAULT_LOCK, active_fault, clear_fault, start_fault
 from orders import free_cash
-from portfolio import position_view
 from market import CACHE, DEFAULT_MAPPINGS, delete_candle, list_mappings, mapping_for, override_candles, save_candle, save_override
 from rate_limit import DEFAULT_LIMITS, WINDOWS, limiter, list_limits, save_limit
 
@@ -224,8 +223,8 @@ def optional_int(value):
 @router.get("/market")
 async def market_page(request: Request):
     rows = list_mappings()
-    exchange = request.query_params.get("exchange")
-    symboltoken = request.query_params.get("symboltoken")
+    selected_value = request.query_params.get("symbol", "")
+    exchange, _, symboltoken = selected_value.partition(":")
     selected = next(
         (row for row in rows if row["exchange"] == exchange and row["symboltoken"] == symboltoken),
         rows[0] if rows else None,
@@ -473,13 +472,17 @@ async def accounts(request: Request):
         ).fetchall()
         accounts = []
         for row in rows:
-            positions = [position_view(position) for position in conn.execute(
-                "SELECT * FROM positions WHERE client_code=?", (row["client_code"],)
-            ).fetchall()]
+            positions = conn.execute(
+                "SELECT net_qty, avg_price, last_price FROM positions WHERE client_code=?",
+                (row["client_code"],),
+            ).fetchall()
+            unrealized = round(sum(
+                (position["last_price"] - position["avg_price"]) * position["net_qty"]
+                for position in positions
+            ), 2)
             accounts.append({
                 **dict(row), "available_cash": free_cash(conn, row["client_code"]),
-                **pnl_values(row["realized_pnl"], sum(p["unrealised"] for p in positions),
-                             row["total_charges"]),
+                **pnl_values(row["realized_pnl"], unrealized, row["total_charges"]),
             })
     return templates.TemplateResponse(request, "account.html", {"accounts": accounts})
 
