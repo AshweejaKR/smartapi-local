@@ -1,5 +1,6 @@
 """Small SQLite-backed temporary SmartAPI fault simulator."""
 import logging
+import os
 from pathlib import Path
 import sqlite3
 import threading
@@ -45,6 +46,13 @@ def connect():
 
 def normalize_mode(mode):
     return MODE_ALIASES.get(str(mode or "").strip().lower())
+
+
+def slow_delay_seconds():
+    try:
+        return max(0.0, float(os.getenv("SMARTAPI_SLOW_DELAY_MS", "250")) / 1000)
+    except ValueError:
+        return 0.25
 
 
 def _finish(conn, row, ended_at, reason):
