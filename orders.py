@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import suppress
 from datetime import datetime
+import logging
 import math
 import os
 from pathlib import Path
@@ -16,6 +17,7 @@ from charges import TRADE_FIELDS, calculate_charges, pnl_values
 from market import MarketDataError, get_effective_ltp, mapping_for
 
 DB_PATH = None
+LOGGER = logging.getLogger("smartapi.orders")
 OPEN = ("OPEN", "PENDING")
 PRODUCTS = {"DELIVERY", "INTRADAY", "MARGIN", "CARRYFORWARD", "BO"}
 VARIETIES = {"NORMAL", "STOPLOSS", "AMO", "ROBO"}
@@ -206,7 +208,7 @@ def used_funds_for_positions(conn, client_code):
 
 
 def insert_order(conn, client_code, values, status, reserved, text=""):
-    order_id = str(time.time_ns())[-16:]
+    order_id = str(uuid.uuid4().int % 10**16).zfill(16)
     unique_id = str(uuid.uuid4())
     now = stamp()
     conn.execute(
@@ -536,7 +538,7 @@ async def order_checker():
         try:
             await asyncio.to_thread(check_open_orders)
         except Exception:
-            pass
+            LOGGER.exception("order checker failed")
         await asyncio.sleep(setting("SMARTAPI_ORDER_CHECK_INTERVAL_MS", 100) / 1000)
 
 
