@@ -1,7 +1,7 @@
 """Phase 14 REAL-vs-LOCAL SmartAPI parity runner."""
 from __future__ import annotations
 
-import base64, hashlib, hmac, json, math, os, sqlite3, struct, time
+import base64, hashlib, hmac, json, logging, math, os, sqlite3, struct, time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -13,6 +13,10 @@ SECRET = {"password", "totp", "apikey", "api_key", "jwttoken", "refreshtoken", "
 DYNAMIC = {"jwttoken", "refreshtoken", "feedtoken", "orderid", "uniqueorderid", "exchangeorderid", "updatetime", "tradedate", "filltime", "timestamp", "ltp", "price", "fillprice", "averageprice", "open", "high", "low", "close"}
 OPEN = {"OPEN", "PENDING", "TRIGGER PENDING"}
 FINAL = {"COMPLETE", "FILLED", "REJECTED", "CANCELLED"}
+
+# Avoid SmartAPI SDK transport/error logs leaking request credentials during parity runs.
+logging.getLogger("SmartApi").disabled = True
+logging.getLogger("smartapi").disabled = True
 
 
 def flag(key, default=False):
@@ -138,6 +142,7 @@ class Parity:
         self.stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.cases = []
         self.orders = {"REAL": set(), "LOCAL": set()}
+        self.order_requests = {"REAL": {}, "LOCAL": {}}
         self.tokens = {"REAL": set(), "LOCAL": set()}
         self.delta = {}
         self.cleanup = {"enabled": self.cleanup_on, "cancelled": [], "closed": [], "errors": []}
@@ -167,8 +172,7 @@ class Parity:
         self.cases.append({"case_id": case_id, "description": desc, "status": "SKIPPED",
                            "notes": note, "real_order_used": False, "cleanup_result": None})
 
-    def local_user(self, balance):
-        self.user = "PARITY14" + self.stamp[-6:]
+    def local_user(self, balance):        self.user = "PARITY14" + self.stamp[-6:]
         self.password = "parity-local-password"
         self.key = "PARITY_LOCAL_" + self.stamp
         with sqlite3.connect(self.db) as conn:
@@ -199,7 +203,9 @@ class Parity:
         order_id = data.get("orderid")
         if not order_id:
             return
-        self.orders[target].add(str(order_id))
+        order_id = str(order_id)
+        self.orders[target].add(order_id)
+        self.order_requests[target][order_id] = {"instrument": dict(instrument), "request": dict(request)}
         self.tokens[target].add(str(instrument["symboltoken"]))
         if request["ordertype"] != "MARKET" or self.wait(target, str(order_id)) not in {"COMPLETE", "FILLED"}:
             return
@@ -248,11 +254,31 @@ class Parity:
         results = []
         for row in rows:
             order_id = str(row.get("orderid"))
-            if order_id in self.orders[target] and str(row.get("status", "")).upper() in OPEN:
+            status = str(row.get("status", "")).upper()
+            if order_id in self.orders[target] and status not in FINAL:
                 result = client.cancelOrder(order_id, row.get("variety", "NORMAL"))
                 results.append(result)
                 self.cleanup["cancelled"].append({"target": target, "orderid": order_id, "result": clean(result)})
         return results
+
+    def refresh_delta(self, target):
+        """Rebuild controlled filled quantity from tracked broker orders, including LIMIT fills."""
+        client = self.real if target == "REAL" else self.local
+        rows = (client.orderBook() or {}).get("data") or []
+        self.delta = {key: value for key, value in self.delta.items() if key[0] != target}
+        for row in rows:
+            order_id = str(row.get("orderid"))
+            meta = self.order_requests[target].get(order_id)
+            if not meta or str(row.get("status", "")).upper() not in {"COMPLETE", "FILLED"}:
+                continue
+            request, instrument = meta["request"], meta["instrument"]
+            quantity = int(row.get("filledshares") or row.get("filled_quantity") or request["quantity"])
+            if quantity <= 0:
+                continue
+            key = (target, instrument["exchange"], instrument["tradingsymbol"],
+                   instrument["symboltoken"], request["producttype"])
+            signed = quantity if request["transactiontype"] == "BUY" else -quantity
+            self.delta[key] = self.delta.get(key, 0) + signed
 
     def cleanup_all(self):
         if not self.cleanup_on:
@@ -260,6 +286,7 @@ class Parity:
         for target, client in (("REAL", self.real), ("LOCAL", self.local)):
             try:
                 self.cancel_open(target)
+                self.refresh_delta(target)
                 if self.close:
                     for (owner, exchange, symbol, token, product), quantity in list(self.delta.items()):
                         if owner != target or not quantity:
@@ -337,8 +364,7 @@ def run():
             p.skip("C1", "NSE NIFTYBEES discovery", "REAL exact symbol unavailable")
             raise RuntimeError("NSE NIFTYBEES unavailable")
         p.mapping(nse, "NIFTYBEES.NS")
-        _, local_search = p.add("C1", "exact NSE NIFTYBEES-EQ", {"exchange": "NSE", "searchscrip": "NIFTYBEES"}, {"exchange": "NSE", "searchscrip": "NIFTYBEES"}, lambda: real_search["result"], lambda: p.local.searchScrip("NSE", "NIFTYBEES"))
-        local_nse = exact(local_search, "NIFTYBEES-EQ")
+        _, local_search = p.add("C1", "exact NSE NIFTYBEES-EQ", {"exchange": "NSE", "searchscrip": "NIFTYBEES"}, {"exchange": "NSE", "searchscrip": "NIFTYBEES"}, lambda: real_search["result"], lambda: p.local.searchScrip("NSE", "NIFTYBEES"))        local_nse = exact(local_search, "NIFTYBEES-EQ")
         if not local_nse:
             raise RuntimeError("LOCAL exact NSE symbol unavailable")
 
