@@ -234,6 +234,9 @@ def save_override(exchange, symboltoken, mode, values):
     mode = str(mode).upper()
     if mode not in {"YAHOO", "HIJACK"}:
         raise ValueError("Mode must be YAHOO or HIJACK")
+    ltp = values.get("ltp")
+    if mode == "HIJACK" and ltp is not None and ltp <= 0:
+        raise ValueError("HIJACK LTP must be greater than zero")
     with connect() as conn:
         conn.execute(
             "INSERT INTO market_overrides "
@@ -248,7 +251,15 @@ def save_override(exchange, symboltoken, mode, values):
         )
 
 
+def candle_timestamp(value):
+    stamp = datetime.fromisoformat(str(value))
+    if stamp.tzinfo is not None:
+        stamp = stamp.astimezone(IST).replace(tzinfo=None)
+    return stamp.replace(second=0, microsecond=0).isoformat()
+
+
 def save_candle(exchange, symboltoken, timestamp, values):
+    timestamp = candle_timestamp(timestamp)
     with connect() as conn:
         conn.execute(
             "INSERT INTO market_override_candles "
@@ -264,6 +275,7 @@ def save_candle(exchange, symboltoken, timestamp, values):
 
 
 def delete_candle(exchange, symboltoken, timestamp):
+    timestamp = candle_timestamp(timestamp)
     with connect() as conn:
         conn.execute(
             "DELETE FROM market_override_candles WHERE exchange=? AND symboltoken=? "
