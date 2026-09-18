@@ -169,7 +169,10 @@ async def gtt_create(request):
     if any(data.get(name) in (None, "") for name in required):
         return error("Invalid GTT parameters", "AB9001")
     with connect() as conn:
-        row = conn.execute("SELECT COUNT(*) FROM gtt_rules").fetchone()[0]
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT COALESCE(MAX(CAST(id AS INTEGER)), 0) FROM gtt_rules"
+        ).fetchone()[0]
         rule_id = str(row + 1)
         stamp = now()
         conn.execute(
