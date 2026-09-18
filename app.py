@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 import socket
+import sys
 import sqlite3
 import time
 
@@ -50,9 +51,16 @@ def init_db():
     init_faults(DB_PATH)
 
 
+def _cli_value(name, default):
+    try:
+        return sys.argv[sys.argv.index(name) + 1]
+    except (ValueError, IndexError):
+        return default
+
+
 def server_addresses():
-    host = os.getenv("SMARTAPI_HOST", "0.0.0.0")
-    port = int(os.getenv("SMARTAPI_PORT", "8000"))
+    host = os.getenv("SMARTAPI_HOST", _cli_value("--host", "127.0.0.1"))
+    port = int(os.getenv("SMARTAPI_PORT", _cli_value("--port", "8000")))
     public = os.getenv("SMARTAPI_PUBLIC_HOST", "").strip()
     try:
         network = socket.gethostbyname(socket.gethostname())
@@ -233,6 +241,6 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host=os.getenv("SMARTAPI_HOST", "0.0.0.0"),
+        host=os.getenv("SMARTAPI_HOST", "127.0.0.1"),
         port=int(os.getenv("SMARTAPI_PORT", "8000")),
     )
