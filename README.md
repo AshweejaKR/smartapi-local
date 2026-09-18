@@ -43,6 +43,9 @@ Admin UI: `http://127.0.0.1:8000/admin`
 - `SMARTAPI_FORCE_TOKEN_EXPIRY=1`
 - `SMARTAPI_MARKET_FILL_DELAY_MS` (default `1000`)
 - `SMARTAPI_ORDER_CHECK_INTERVAL_MS` (default `100`)
+- `SMARTAPI_MARKET_CACHE_TTL_SECONDS` (default `5`)
+- `SMARTAPI_SHORT_MARGIN_PERCENT` (default `20`)
+- `SMARTAPI_SLOW_DELAY_MS` (default `250`)
 - `SMARTAPI_DISABLE_TOTP=1` for local-only testing
 
 ## Controls
