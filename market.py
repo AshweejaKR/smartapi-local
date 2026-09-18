@@ -235,7 +235,8 @@ def save_override(exchange, symboltoken, mode, values):
     if mode not in {"YAHOO", "HIJACK"}:
         raise ValueError("Mode must be YAHOO or HIJACK")
     ltp = values.get("ltp")
-    if mode == "HIJACK" and ltp is not None and ltp <= 0:
+    effective = ltp if ltp is not None else values.get("close")
+    if mode == "HIJACK" and effective is not None and effective <= 0:
         raise ValueError("HIJACK LTP must be greater than zero")
     with connect() as conn:
         conn.execute(
