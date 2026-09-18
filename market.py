@@ -1,10 +1,14 @@
 """SmartAPI market data with Yahoo and per-symbol HIJACK support."""
 from collections import OrderedDict
+import asyncio
 from copy import deepcopy
 from datetime import datetime, timedelta
 import math
+import os
 from pathlib import Path
 import sqlite3
+import threading
+import time
 from zoneinfo import ZoneInfo
 
 from fastapi import Request
@@ -48,20 +52,26 @@ class LastKnownCache:
     def __init__(self, limit=128):
         self.limit = limit
         self.values = OrderedDict()
+        self.lock = threading.Lock()
 
-    def get(self, key):
-        value = self.values.pop(key)
-        self.values[key] = value
-        return deepcopy(value)
+    def get(self, key, max_age=None):
+        with self.lock:
+            saved_at, value = self.values[key]
+            if max_age is not None and time.monotonic() - saved_at > max_age:
+                raise KeyError(key)
+            self.values.move_to_end(key)
+            return deepcopy(value)
 
     def put(self, key, value):
-        self.values.pop(key, None)
-        self.values[key] = deepcopy(value)
-        while len(self.values) > self.limit:
-            self.values.popitem(last=False)
+        with self.lock:
+            self.values[key] = (time.monotonic(), deepcopy(value))
+            self.values.move_to_end(key)
+            while len(self.values) > self.limit:
+                self.values.popitem(last=False)
 
     def clear(self):
-        self.values.clear()
+        with self.lock:
+            self.values.clear()
 
 
 def number(value):
@@ -108,7 +118,8 @@ class YahooProvider:
             yahoo_symbol, start=start, end=end + step, interval=yahoo_interval
         )
         if resample:
-            frame = frame.resample(resample, origin=start).agg(
+            origin = start.replace(tzinfo=frame.index.tz) if frame.index.tz is not None and start.tzinfo is None else start
+            frame = frame.resample(resample, origin=origin).agg(
                 {"Open": "first", "High": "max", "Low": "min",
                  "Close": "last", "Volume": "sum"}
             )
@@ -283,7 +294,18 @@ def override_candles(exchange, symboltoken, start, end):
     return result
 
 
+def cache_ttl():
+    try:
+        return max(0.0, float(os.getenv("SMARTAPI_MARKET_CACHE_TTL_SECONDS", "5")))
+    except ValueError:
+        return 5.0
+
+
 def cached(key, fetch):
+    try:
+        return CACHE.get(key, cache_ttl())
+    except KeyError:
+        pass
     try:
         value = fetch()
     except Exception as exc:
@@ -393,8 +415,8 @@ async def ltp_data(request: Request):
     if not all(data.get(key) for key in ("exchange", "tradingsymbol", "symboltoken")):
         return market_error(MarketDataError("Invalid LTP request", "AB1004"))
     try:
-        quote = get_quote(
-            data.get("exchange"), data.get("symboltoken"), data.get("tradingsymbol")
+        quote = await asyncio.to_thread(
+            get_quote, data.get("exchange"), data.get("symboltoken"), data.get("tradingsymbol")
         )
     except MarketDataError as exc:
         return market_error(exc)
@@ -448,7 +470,8 @@ async def market_data(request: Request):
             continue
         for token in tokens:
             try:
-                fetched.append(quote_view(get_quote(exchange, token), mode))
+                quote = await asyncio.to_thread(get_quote, exchange, token)
+                fetched.append(quote_view(quote, mode))
             except MarketDataError as exc:
                 unfetched.append({
                     "exchange": exchange, "symbolToken": str(token),
@@ -467,7 +490,7 @@ async def candle_data(request: Request):
         end = datetime.strptime(data.get("todate", ""), "%Y-%m-%d %H:%M")
         if interval not in INTERVALS or start > end:
             raise ValueError
-        rows = get_candles(data.get("exchange"), data.get("symboltoken"), interval, start, end)
+        rows = await asyncio.to_thread(get_candles, data.get("exchange"), data.get("symboltoken"), interval, start, end)
     except (TypeError, ValueError):
         return market_error(MarketDataError("Invalid candle request", "AB1004"))
     except MarketDataError as exc:
