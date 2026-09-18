@@ -13,7 +13,7 @@ from auth import generate_tokens, init_auth, login, logout, profile
 from charges import init_charges
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from fault import active_fault, fault_response, init_faults
+from fault import active_fault, fault_response, init_faults, slow_delay_seconds
 from market import candle_data, init_market, ltp_data, market_data
 from orders import (
     cancel_order, init_orders, modify_order, order_checker, place_order, stop_checker,
@@ -187,7 +187,7 @@ async def smartapi_faults(request: Request, call_next):
         if fault:
             request.state.fault_mode = fault["mode"]
             if fault["mode"] == "slow":
-                await asyncio.sleep(max(0, fault["ends_at"] - time.time()))
+                await asyncio.sleep(slow_delay_seconds())
             else:
                 return fault_response(fault["mode"])
     return await call_next(request)
@@ -229,7 +229,7 @@ async def smartapi_audit(request: Request, call_next):
 
 @app.get("/health")
 async def health():
-    return success({"service": "smartapi-local", "phase": 13})
+    return success({"service": "smartapi-local"})
 
 
 for method, path, name in SDK_ROUTES:
