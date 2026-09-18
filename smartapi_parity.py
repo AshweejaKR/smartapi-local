@@ -172,7 +172,8 @@ class Parity:
         self.cases.append({"case_id": case_id, "description": desc, "status": "SKIPPED",
                            "notes": note, "real_order_used": False, "cleanup_result": None})
 
-    def local_user(self, balance):        self.user = "PARITY14" + self.stamp[-6:]
+    def local_user(self, balance):
+        self.user = "PARITY14" + self.stamp[-6:]
         self.password = "parity-local-password"
         self.key = "PARITY_LOCAL_" + self.stamp
         with sqlite3.connect(self.db) as conn:
@@ -298,6 +299,25 @@ class Parity:
             except Exception as exc:
                 self.cleanup["errors"].append(f"{target}: {type(exc).__name__}: {exc}")
 
+    def cleanup_local_user(self):
+        user = getattr(self, "user", None)
+        if not user:
+            return
+        try:
+            with sqlite3.connect(self.db) as conn:
+                conn.execute(
+                    "DELETE FROM order_events WHERE order_id IN "
+                    "(SELECT order_id FROM orders WHERE client_code=?)", (user,)
+                )
+                for table in ("sessions", "trades", "orders", "positions", "holdings", "gtt_rules", "accounts"):
+                    conn.execute(f"DELETE FROM {table} WHERE client_code=?", (user,))
+                conn.execute("DELETE FROM users WHERE client_code=?", (user,))
+            self.cleanup["local_user_deleted"] = user
+        except Exception as exc:
+            self.cleanup["errors"].append(
+                f"LOCAL_USER: {type(exc).__name__}: {exc}"
+            )
+
     def reports(self):
         for case in self.cases:
             case["cleanup_result"] = self.cleanup
@@ -364,7 +384,8 @@ def run():
             p.skip("C1", "NSE NIFTYBEES discovery", "REAL exact symbol unavailable")
             raise RuntimeError("NSE NIFTYBEES unavailable")
         p.mapping(nse, "NIFTYBEES.NS")
-        _, local_search = p.add("C1", "exact NSE NIFTYBEES-EQ", {"exchange": "NSE", "searchscrip": "NIFTYBEES"}, {"exchange": "NSE", "searchscrip": "NIFTYBEES"}, lambda: real_search["result"], lambda: p.local.searchScrip("NSE", "NIFTYBEES"))        local_nse = exact(local_search, "NIFTYBEES-EQ")
+        _, local_search = p.add("C1", "exact NSE NIFTYBEES-EQ", {"exchange": "NSE", "searchscrip": "NIFTYBEES"}, {"exchange": "NSE", "searchscrip": "NIFTYBEES"}, lambda: real_search["result"], lambda: p.local.searchScrip("NSE", "NIFTYBEES"))
+        local_nse = exact(local_search, "NIFTYBEES-EQ")
         if not local_nse:
             raise RuntimeError("LOCAL exact NSE symbol unavailable")
 
@@ -481,6 +502,7 @@ def run():
             p.add("J5", "logout", {"clientcode": keys["CLIENT_ID"]}, {"clientcode": p.user},
                   lambda: p.real.terminateSession(keys["CLIENT_ID"]), lambda: p.local.terminateSession(p.user))
             p.add("J6", "request after logout", {}, {}, p.real.rmsLimit, p.local.rmsLimit)
+        p.cleanup_local_user()
         reports = p.reports()
     return reports
 
