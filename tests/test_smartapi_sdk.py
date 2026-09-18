@@ -189,7 +189,7 @@ def test_modify_and_cancel_never_fill(sdk_server):
         assert s.sdk.modifyOrder({"orderid": order, "quantity": 4})["status"] is False
     s.hijack(80)
     time.sleep(1.15)
-    assert all(row["status"] == "CANCELLED" for row in s.sdk.orderBook()["data"])
+    assert all(row["status"] == "cancelled" for row in s.sdk.orderBook()["data"])
     assert s.sdk.tradeBook()["data"] == []
     assert s.sdk.rmsLimit()["data"]["availablecash"] == 100000
     assert s.sdk.cancelOrder("unknown", "NORMAL")["status"] is False
@@ -238,7 +238,7 @@ def test_insufficient_cash_at_acceptance_and_fill(sdk_server):
         "action": "remove", "amount": 99900}).status_code == 303
     s.hijack(100)
     assert s.sdk.placeOrderFullResponse(ORDER)["status"] is False
-    assert s.sdk.orderBook()["data"][0]["status"] == "REJECTED"
+    assert s.sdk.orderBook()["data"][0]["status"] == "rejected"
     order = place(s, quantity=1)
     s.hijack(101)
     assert s.wait_order(order, "REJECTED")["text"] == "Insufficient funds"
