@@ -478,8 +478,8 @@ async def accounts(request: Request):
             ).fetchall()]
             accounts.append({
                 **dict(row), "available_cash": free_cash(conn, row["client_code"]),
-                **pnl_values(row["realized_pnl"] + sum(p["realised"] for p in positions),
-                             sum(p["unrealised"] for p in positions), row["total_charges"]),
+                **pnl_values(row["realized_pnl"], sum(p["unrealised"] for p in positions),
+                             row["total_charges"]),
             })
     return templates.TemplateResponse(request, "account.html", {"accounts": accounts})
 
@@ -581,7 +581,7 @@ def reset_state(conn, action):
     if action in {"positions", "full"}:
         conn.execute("DELETE FROM positions")
         conn.execute("DELETE FROM holdings")
-        conn.execute("UPDATE accounts SET used_funds=0, realized_pnl=0")
+        conn.execute("UPDATE accounts SET used_funds=0")
     if action in {"hijack", "full"}:
         conn.execute("DELETE FROM market_overrides")
         conn.execute("DELETE FROM market_override_candles")
