@@ -98,7 +98,7 @@ async def rms_limit(request):
     positions = await asyncio.to_thread(lambda: [position_view(row) for row in rows])
     used = round((account["used_funds"] if account else 0) + reserved, 2)
     net = round((account["available_balance"] if account else 0) - used, 2)
-    realized = round((account["realized_pnl"] if account else 0) + sum(row["realised"] for row in positions), 2)
+    realized = round(account["realized_pnl"] if account else 0, 2)
     unrealized = round(sum(row["unrealised"] for row in positions), 2)
     return result({"net": net, "availablecash": net, "availableintradaypayin": 0, "availablelimitmargin": 0, "collateral": 0, "m2munrealized": unrealized, "m2mrealized": realized, "utiliseddebits": used, "utilisedcredits": 0, "spanmargin": 0, "exposuremargin": 0, "varmargin": 0, "adhocmargin": 0, "cashmarginavailable": net, "rmslimit": net, "unrealizedprofitandloss": unrealized, "realizedprofitandloss": realized, **pnl_values(realized, unrealized, account["total_charges"] if account else 0)})
 
