@@ -197,7 +197,7 @@ async def logs_page(request: Request):
 
 def market_redirect(exchange, symboltoken, message):
     return redirect(
-        f"/admin/market?exchange={quote(str(exchange))}&symboltoken={quote(str(symboltoken))}",
+        f"/admin/market?symbol={quote(str(exchange) + ':' + str(symboltoken))}",
         message,
     )
 
