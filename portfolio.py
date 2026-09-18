@@ -9,6 +9,14 @@ from charges import TRADE_FIELDS, pnl_values
 from market import get_effective_ltp
 
 DB_PATH = None
+ORDER_STATUS = {
+    "PENDING": "open pending", "OPEN": "open", "FILLED": "complete",
+    "REJECTED": "rejected", "CANCELLED": "cancelled",
+}
+
+
+def api_order_status(value):
+    return ORDER_STATUS.get(str(value).upper(), str(value).lower())
 
 
 def connect():
@@ -67,7 +75,8 @@ def result(data):
 
 def order_view(row):
     filled = row["filled_quantity"]
-    return {"variety": row["variety"], "ordertype": row["order_type"], "producttype": row["product_type"], "duration": row["duration"], "price": row["price"], "triggerprice": row["trigger_price"], "quantity": row["quantity"], "disclosedquantity": row["disclosed_quantity"], "transactiontype": row["transaction_type"], "exchange": row["exchange"], "tradingsymbol": row["tradingsymbol"], "symboltoken": row["symboltoken"], "orderid": row["order_id"], "uniqueorderid": row["unique_order_id"], "status": row["status"], "orderstatus": row["status"], "filledshares": filled, "unfilledshares": row["quantity"] - filled, "averageprice": row["average_price"], "text": row["text"], "updatetime": row["updated_at"]}
+    status = api_order_status(row["status"])
+    return {"variety": row["variety"], "ordertype": row["order_type"], "producttype": row["product_type"], "duration": row["duration"], "price": row["price"], "triggerprice": row["trigger_price"], "quantity": row["quantity"], "disclosedquantity": row["disclosed_quantity"], "transactiontype": row["transaction_type"], "exchange": row["exchange"], "tradingsymbol": row["tradingsymbol"], "symboltoken": row["symboltoken"], "orderid": row["order_id"], "uniqueorderid": row["unique_order_id"], "status": status, "orderstatus": status, "filledshares": filled, "unfilledshares": row["quantity"] - filled, "averageprice": row["average_price"], "text": row["text"], "updatetime": row["updated_at"]}
 
 
 def trade_view(row):
