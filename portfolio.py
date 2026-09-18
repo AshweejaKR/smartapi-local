@@ -1,4 +1,5 @@
 """Persistent SmartAPI portfolio storage and views."""
+import asyncio
 from datetime import datetime
 from pathlib import Path
 import sqlite3
@@ -94,7 +95,7 @@ async def rms_limit(request):
         account = conn.execute("SELECT * FROM accounts WHERE client_code=?", (auth["client_code"],)).fetchone()
         rows = conn.execute("SELECT * FROM positions WHERE client_code=?", (auth["client_code"],)).fetchall()
         reserved = conn.execute("SELECT COALESCE(SUM(reserved_funds), 0) FROM orders WHERE client_code=? AND status IN ('OPEN', 'PENDING')", (auth["client_code"],)).fetchone()[0]
-    positions = [position_view(row) for row in rows]
+    positions = await asyncio.to_thread(lambda: [position_view(row) for row in rows])
     used = round((account["used_funds"] if account else 0) + reserved, 2)
     net = round((account["available_balance"] if account else 0) - used, 2)
     realized = round((account["realized_pnl"] if account else 0) + sum(row["realised"] for row in positions), 2)
@@ -126,7 +127,8 @@ async def positions(request):
         return failed("Invalid or expired token", 403)
     with connect() as conn:
         rows = conn.execute("SELECT * FROM positions WHERE client_code=? ORDER BY exchange, tradingsymbol", (auth["client_code"],)).fetchall()
-    return result([position_view(row) for row in rows])
+    values = await asyncio.to_thread(lambda: [position_view(row) for row in rows])
+    return result(values)
 
 
 async def holdings(request, all_holdings=False):
@@ -135,7 +137,7 @@ async def holdings(request, all_holdings=False):
         return failed("Invalid or expired token", 403)
     with connect() as conn:
         rows = conn.execute("SELECT * FROM holdings WHERE client_code=? ORDER BY exchange, tradingsymbol", (auth["client_code"],)).fetchall()
-    values = [holding_view(row) for row in rows]
+    values = await asyncio.to_thread(lambda: [holding_view(row) for row in rows])
     if not all_holdings:
         return result(values)
     value = round(sum(row["ltp"] * row["quantity"] for row in values), 2)
