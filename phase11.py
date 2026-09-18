@@ -160,6 +160,13 @@ def _gtt_error(request):
     return failed("Invalid or expired token", 403) if not session(request) else None
 
 
+def next_gtt_id(conn):
+    value = conn.execute(
+        "SELECT COALESCE(MAX(CAST(id AS INTEGER)), 0) FROM gtt_rules"
+    ).fetchone()[0]
+    return str(value + 1)
+
+
 async def gtt_create(request):
     if (bad := _gtt_error(request)):
         return bad
@@ -170,10 +177,7 @@ async def gtt_create(request):
         return error("Invalid GTT parameters", "AB9001")
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT COALESCE(MAX(CAST(id AS INTEGER)), 0) FROM gtt_rules"
-        ).fetchone()[0]
-        rule_id = str(row + 1)
+        rule_id = next_gtt_id(conn)
         stamp = now()
         conn.execute(
             "INSERT INTO gtt_rules VALUES (?, ?, 'NEW', ?, ?, ?)",
