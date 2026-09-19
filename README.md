@@ -38,15 +38,27 @@ Admin UI: `http://127.0.0.1:8000/admin`
 
 ## Useful environment variables
 
-- `SMARTAPI_ACCESS_TOKEN_TTL_SECONDS`
-- `SMARTAPI_REFRESH_TOKEN_TTL_SECONDS`
-- `SMARTAPI_FORCE_TOKEN_EXPIRY=1`
-- `SMARTAPI_MARKET_FILL_DELAY_MS` (default `1000`)
-- `SMARTAPI_ORDER_CHECK_INTERVAL_MS` (default `100`)
-- `SMARTAPI_MARKET_CACHE_TTL_SECONDS` (default `5`)
-- `SMARTAPI_SHORT_MARGIN_PERCENT` (default `20`)
-- `SMARTAPI_SLOW_DELAY_MS` (default `250`)
-- `SMARTAPI_DISABLE_TOTP=1` for local-only testing
+Server:
+- `SMARTAPI_HOST` (default `127.0.0.1`)
+- `SMARTAPI_PORT` (default `8000`)
+- `SMARTAPI_PUBLIC_HOST` for the displayed public/Elastic IP
+- `SMARTAPI_STARTUP_BANNER=0` to hide the startup banner
+- `SMARTAPI_ROOT` for the LTP control panel
+
+Simulator:
+- `SMARTAPI_ACCESS_TOKEN_TTL_SECONDS`, `SMARTAPI_REFRESH_TOKEN_TTL_SECONDS`
+- `SMARTAPI_FORCE_TOKEN_EXPIRY=1`, `SMARTAPI_DISABLE_TOTP=1`
+- `SMARTAPI_MARKET_FILL_DELAY_MS=1000`, `SMARTAPI_ORDER_CHECK_INTERVAL_MS=100`
+- `SMARTAPI_MARKET_CACHE_TTL_SECONDS=5`
+- `SMARTAPI_SHORT_MARGIN_PERCENT=20`, `SMARTAPI_SLOW_DELAY_MS=250`
+
+Parity:
+- `REAL_ENV_FILE`, `LOCAL_ROOT`, `LOCAL_DB`, `PARITY_REPORT_DIR`
+- `PARITY_API_DELAY`, `PARITY_POLL_TIMEOUT`, `PARITY_POLL_INTERVAL`
+- `ENABLE_REAL_ORDERS`, `ENABLE_REAL_200_QTY`, `ENABLE_REAL_MCX_ORDERS`
+- `CLEANUP_ENABLED`, `CLOSE_CONTROLLED_POSITIONS`
+
+Rate limiting is a local test feature. Before authentication, requests may be bucketed by the client code supplied in the request body; do not treat that value as authenticated identity.
 
 ## Controls
 
