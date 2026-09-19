@@ -1,6 +1,5 @@
 """Persistent SmartAPI portfolio storage and views."""
 import asyncio
-from datetime import datetime
 from pathlib import Path
 import sqlite3
 
@@ -39,27 +38,6 @@ def init_portfolio(path):
         conn.execute("CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY, client_code TEXT NOT NULL, trade_id TEXT UNIQUE NOT NULL, order_id TEXT NOT NULL, exchange TEXT NOT NULL, tradingsymbol TEXT NOT NULL, symboltoken TEXT NOT NULL, transaction_type TEXT NOT NULL, product_type TEXT NOT NULL, quantity INTEGER NOT NULL, price REAL NOT NULL, trade_time TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS positions (client_code TEXT NOT NULL, exchange TEXT NOT NULL, symboltoken TEXT NOT NULL, product_type TEXT NOT NULL, tradingsymbol TEXT NOT NULL, net_qty INTEGER NOT NULL DEFAULT 0, buy_qty INTEGER NOT NULL DEFAULT 0, sell_qty INTEGER NOT NULL DEFAULT 0, buy_amount REAL NOT NULL DEFAULT 0, sell_amount REAL NOT NULL DEFAULT 0, avg_price REAL NOT NULL DEFAULT 0, realized_pnl REAL NOT NULL DEFAULT 0, last_price REAL NOT NULL DEFAULT 0, PRIMARY KEY(client_code, exchange, symboltoken, product_type))")
         conn.execute("CREATE TABLE IF NOT EXISTS holdings (client_code TEXT NOT NULL, exchange TEXT NOT NULL, symboltoken TEXT NOT NULL, tradingsymbol TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 0, average_price REAL NOT NULL DEFAULT 0, isin TEXT NOT NULL DEFAULT '', last_price REAL NOT NULL DEFAULT 0, PRIMARY KEY(client_code, exchange, symboltoken))")
-
-
-def save_order(client_code, values):
-    now = values.get("created_at") or datetime.now().strftime("%d-%b-%Y %H:%M:%S")
-    with connect() as conn:
-        conn.execute("INSERT OR REPLACE INTO orders (client_code, order_id, variety, order_type, product_type, duration, price, trigger_price, quantity, disclosed_quantity, transaction_type, exchange, tradingsymbol, symboltoken, status, filled_quantity, average_price, reserved_funds, text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (client_code, values["order_id"], values.get("variety", "NORMAL"), values.get("order_type", "MARKET"), values.get("product_type", "CNC"), values.get("duration", "DAY"), values.get("price", 0), values.get("trigger_price", 0), values["quantity"], values.get("disclosed_quantity", 0), values["transaction_type"], values["exchange"], values["tradingsymbol"], str(values["symboltoken"]), values.get("status", "OPEN"), values.get("filled_quantity", 0), values.get("average_price", 0), values.get("reserved_funds", 0), values.get("text", ""), now))
-
-
-def save_trade(client_code, values):
-    with connect() as conn:
-        conn.execute("INSERT OR REPLACE INTO trades (client_code, trade_id, order_id, exchange, tradingsymbol, symboltoken, transaction_type, product_type, quantity, price, trade_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (client_code, values["trade_id"], values["order_id"], values["exchange"], values["tradingsymbol"], str(values["symboltoken"]), values["transaction_type"], values.get("product_type", "CNC"), values["quantity"], values["price"], values.get("trade_time") or datetime.now().strftime("%d-%b-%Y %H:%M:%S")))
-
-
-def save_position(client_code, values):
-    with connect() as conn:
-        conn.execute("INSERT OR REPLACE INTO positions (client_code, exchange, symboltoken, product_type, tradingsymbol, net_qty, buy_qty, sell_qty, buy_amount, sell_amount, avg_price, realized_pnl, last_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (client_code, values["exchange"], str(values["symboltoken"]), values.get("product_type", "CNC"), values["tradingsymbol"], values.get("net_qty", 0), values.get("buy_qty", 0), values.get("sell_qty", 0), values.get("buy_amount", 0), values.get("sell_amount", 0), values.get("avg_price", 0), values.get("realized_pnl", 0), values.get("last_price", 0)))
-
-
-def save_holding(client_code, values):
-    with connect() as conn:
-        conn.execute("INSERT OR REPLACE INTO holdings (client_code, exchange, symboltoken, tradingsymbol, quantity, average_price, isin, last_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (client_code, values["exchange"], str(values["symboltoken"]), values["tradingsymbol"], values.get("quantity", 0), values.get("average_price", 0), values.get("isin", ""), values.get("last_price", 0)))
 
 
 def price(row):
