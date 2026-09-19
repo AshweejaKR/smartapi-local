@@ -1,7 +1,8 @@
 """Phase 14 REAL-vs-LOCAL SmartAPI parity runner."""
 from __future__ import annotations
 
-import base64, hashlib, hmac, json, logging, math, os, sqlite3, struct, time
+import base64, hashlib, hmac, json, math, os, sqlite3, struct, time
+import logzero
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -11,12 +12,10 @@ from auth import password_hash
 ROOT = Path(__file__).resolve().parent
 SECRET = {"password", "totp", "apikey", "api_key", "jwttoken", "refreshtoken", "feedtoken", "authorization", "email", "mobileno"}
 DYNAMIC = {"jwttoken", "refreshtoken", "feedtoken", "orderid", "uniqueorderid", "exchangeorderid", "updatetime", "tradedate", "filltime", "timestamp", "ltp", "price", "fillprice", "averageprice", "open", "high", "low", "close"}
-OPEN = {"OPEN", "PENDING", "TRIGGER PENDING"}
 FINAL = {"COMPLETE", "FILLED", "REJECTED", "CANCELLED"}
 
-# Avoid SmartAPI SDK transport/error logs leaking request credentials during parity runs.
-logging.getLogger("SmartApi").disabled = True
-logging.getLogger("smartapi").disabled = True
+# SmartAPI uses logzero and may log request headers, including X-PrivateKey.
+logzero.logger.disabled = True
 
 
 def flag(key, default=False):
@@ -96,8 +95,6 @@ def diff(a, b, path="", out=None):
 
 def call(func):
     delay = float(cfg("PARITY_API_DELAY", 1))
-    if delay:
-        time.sleep(delay)
     try:
         return {"exception": None, "result": func()}
     except Exception as exc:
