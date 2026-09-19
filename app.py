@@ -39,9 +39,9 @@ def init_db():
         )
 
     init_auth(DB_PATH)
+    init_portfolio(DB_PATH)
     init_admin(DB_PATH)
     init_market(DB_PATH)
-    init_portfolio(DB_PATH)
     with sqlite3.connect(DB_PATH) as conn:
         init_charges(conn)
     init_orders(DB_PATH)
