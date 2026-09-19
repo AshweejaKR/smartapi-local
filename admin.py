@@ -621,5 +621,6 @@ async def reset_simulator(request: Request, action: str):
     if action in {"rate-limits", "full"}:
         limiter.clear()
     if action == "full":
+        clear_fault()
         CACHE.clear()
     return redirect("/admin", RESETS[action][0] + " completed.")
