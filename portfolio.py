@@ -28,7 +28,7 @@ def init_portfolio(path):
     global DB_PATH
     DB_PATH = Path(path)
     with connect() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS accounts (client_code TEXT PRIMARY KEY, available_balance REAL NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS accounts (client_code TEXT PRIMARY KEY, available_balance REAL NOT NULL DEFAULT 0, used_funds REAL NOT NULL DEFAULT 0, realized_pnl REAL NOT NULL DEFAULT 0)")
         columns = {row[1] for row in conn.execute("PRAGMA table_info(accounts)")}
         for name in ("used_funds", "realized_pnl"):
             if name not in columns:
