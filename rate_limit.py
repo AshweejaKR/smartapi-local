@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse
 
 
 DB_PATH = None
+CONFIG_CACHE = None
+CONFIG_LOCK = threading.Lock()
 WINDOWS = (("per_second", 1), ("per_minute", 60), ("per_hour", 3600))
 RATE_LIMIT_MESSAGE = "Access denied because of exceeding access rate"
 
@@ -80,10 +82,16 @@ def init_rate_limits(path):
 
 
 def list_limits():
-    with connect() as conn:
-        return conn.execute(
-            "SELECT * FROM rate_limit_config ORDER BY scope, target"
-        ).fetchall()
+    global CONFIG_CACHE
+    with CONFIG_LOCK:
+        if CONFIG_CACHE is None:
+            with connect() as conn:
+                CONFIG_CACHE = [
+                    dict(row) for row in conn.execute(
+                        "SELECT * FROM rate_limit_config ORDER BY scope, target"
+                    )
+                ]
+        return [dict(row) for row in CONFIG_CACHE]
 
 
 def save_limit(scope, target, per_second, per_minute, per_hour, enabled=True):
@@ -121,8 +129,11 @@ class RateLimiter:
         self.lock = threading.Lock()
 
     def clear(self):
+        global CONFIG_CACHE
         with self.lock:
             self.events.clear()
+        with CONFIG_LOCK:
+            CONFIG_CACHE = None
 
     def _configs(self, path):
         return [
