@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 DB_PATH = None
 LOCK = threading.Lock()
 LOGGER = logging.getLogger("smartapi.faults")
+LOGGER.setLevel(logging.INFO)
 
 MODE_ALIASES = {
     "api_unavailable": "unavailable", "unavailable": "unavailable",
