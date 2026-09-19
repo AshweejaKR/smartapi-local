@@ -3,7 +3,6 @@ import asyncio
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
-import socket
 import sys
 import sqlite3
 import time
@@ -62,18 +61,12 @@ def server_addresses():
     host = os.getenv("SMARTAPI_HOST", _cli_value("--host", "127.0.0.1"))
     port = int(os.getenv("SMARTAPI_PORT", _cli_value("--port", "8000")))
     public = os.getenv("SMARTAPI_PUBLIC_HOST", "").strip()
-    try:
-        network = socket.gethostbyname(socket.gethostname())
-    except OSError:
-        network = "127.0.0.1"
-
-    base = f"http://{public or network}:{port}"
+    base = f"http://{public or '127.0.0.1'}:{port}"
     print("\n" + "=" * 44)
     print(" SmartAPI Local Server")
     print("=" * 44)
     print(f"Bind       : {host}:{port}")
     print(f"Local      : http://127.0.0.1:{port}")
-    print(f"Network    : http://{network}:{port}")
     if public:
         print(f"Public     : http://{public}:{port}")
     print(f"Admin      : {base}/admin")
