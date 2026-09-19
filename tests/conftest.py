@@ -92,6 +92,11 @@ class SDKServer:
         pytest.fail(f"Order {order_id} did not become {status}: {row}")
 
 
+@pytest.fixture(autouse=True)
+def disable_startup_banner(monkeypatch):
+    monkeypatch.setenv("SMARTAPI_STARTUP_BANNER", "0")
+
+
 @pytest.fixture
 def sdk_server(tmp_path, monkeypatch):
     db = tmp_path / "sdk.db"
