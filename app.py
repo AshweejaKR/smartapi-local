@@ -127,35 +127,36 @@ SDK_ROUTES = [
 ]
 
 
+CORE_HANDLERS = {
+    "/rest/auth/angelbroking/user/v1/loginByPassword": login,
+    "/rest/auth/angelbroking/jwt/v1/generateTokens": generate_tokens,
+    "/rest/secure/angelbroking/user/v1/getProfile": profile,
+    "/rest/secure/angelbroking/user/v1/logout": logout,
+    "/rest/secure/angelbroking/order/v1/getLtpData": ltp_data,
+    "/rest/secure/angelbroking/market/v1/quote": market_data,
+    "/rest/secure/angelbroking/historical/v1/getCandleData": candle_data,
+    "/rest/secure/angelbroking/order/v1/getOrderBook": order_book,
+    "/rest/secure/angelbroking/order/v1/getTradeBook": trade_book,
+    "/rest/secure/angelbroking/order/v1/placeOrder": place_order,
+    "/rest/secure/angelbroking/order/v1/modifyOrder": modify_order,
+    "/rest/secure/angelbroking/order/v1/cancelOrder": cancel_order,
+    "/rest/secure/angelbroking/user/v1/getRMS": rms_limit,
+    "/rest/secure/angelbroking/order/v1/getPosition": positions,
+}
+
+
 async def dispatch_rest(request: Request):
-    handlers = {
-        "/rest/auth/angelbroking/user/v1/loginByPassword": login,
-        "/rest/auth/angelbroking/jwt/v1/generateTokens": generate_tokens,
-        "/rest/secure/angelbroking/user/v1/getProfile": profile,
-        "/rest/secure/angelbroking/user/v1/logout": logout,
-        "/rest/secure/angelbroking/order/v1/getLtpData": ltp_data,
-        "/rest/secure/angelbroking/market/v1/quote": market_data,
-        "/rest/secure/angelbroking/historical/v1/getCandleData": candle_data,
-        "/rest/secure/angelbroking/order/v1/getOrderBook": order_book,
-        "/rest/secure/angelbroking/order/v1/getTradeBook": trade_book,
-        "/rest/secure/angelbroking/order/v1/placeOrder": place_order,
-        "/rest/secure/angelbroking/order/v1/modifyOrder": modify_order,
-        "/rest/secure/angelbroking/order/v1/cancelOrder": cancel_order,
-        "/rest/secure/angelbroking/user/v1/getRMS": rms_limit,
-        "/rest/secure/angelbroking/order/v1/getPosition": positions,
-    }
-    if handler := handlers.get(request.url.path):
+    path = request.scope["route"].path
+    if handler := CORE_HANDLERS.get(path):
         return await handler(request)
-    if request.url.path in {
+    if path in {
         "/rest/secure/angelbroking/portfolio/v1/getHolding",
         "/rest/secure/angelbroking/portfolio/v1/getAllHolding",
     }:
-        return await holdings(request, request.url.path.endswith("getAllHolding"))
-    if request.url.path.endswith("/details/" + request.path_params.get("order_id", "")):
+        return await holdings(request, path.endswith("getAllHolding"))
+    if path == "/rest/secure/angelbroking/order/v1/details/{order_id}":
         return await phase11.individual_order_details(request)
-    if handler := phase11.HANDLERS.get(request.url.path):
-        return await handler(request)
-    return error("Unknown SmartAPI route", "AB4040", 404)
+    return await phase11.HANDLERS[path](request)
 
 
 @asynccontextmanager
