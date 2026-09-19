@@ -45,3 +45,45 @@ def test_reports_write_json_and_markdown(tmp_path, monkeypatch):
     assert report["counts"] == {"PASS": 1, "FAIL": 0, "SKIPPED": 1, "LOCAL_ONLY": 1}
     markdown = markdown_path.read_text()
     assert "T1" in markdown and "T2" in markdown and "T3" in markdown
+
+
+class FakeClient:
+    def __init__(self, rows):
+        self.rows = rows
+        self.cancelled = []
+
+    def orderBook(self):
+        return {"status": True, "data": self.rows}
+
+    def cancelOrder(self, order_id, variety):
+        self.cancelled.append(order_id)
+        return {"status": True, "data": {"orderid": order_id}}
+
+
+def test_cleanup_cancels_any_tracked_non_final_status(monkeypatch):
+    monkeypatch.setattr(parity.time, "sleep", lambda _: None)
+    runner = parity.Parity()
+    runner.local = FakeClient([
+        {"orderid": "1", "status": "validation pending", "variety": "NORMAL"},
+        {"orderid": "2", "status": "complete", "variety": "NORMAL"},
+    ])
+    runner.orders["LOCAL"] = {"1", "2"}
+    runner.cancel_open("LOCAL")
+    assert runner.local.cancelled == ["1"]
+
+
+def test_refresh_delta_includes_filled_limit_orders(monkeypatch):
+    monkeypatch.setattr(parity.time, "sleep", lambda _: None)
+    runner = parity.Parity()
+    instrument = {"exchange": "NSE", "tradingsymbol": "NIFTYBEES-EQ", "symboltoken": "10576"}
+    runner.local = FakeClient([
+        {"orderid": "1", "status": "complete", "filledshares": "3"},
+        {"orderid": "2", "status": "filled", "filledshares": "1"},
+    ])
+    runner.order_requests["LOCAL"] = {
+        "1": {"instrument": instrument, "request": parity.order(instrument, "BUY", "LIMIT", 3, "100")},
+        "2": {"instrument": instrument, "request": parity.order(instrument, "SELL", "MARKET", 1)},
+    }
+    runner.refresh_delta("LOCAL")
+    key = ("LOCAL", "NSE", "NIFTYBEES-EQ", "10576", "DELIVERY")
+    assert runner.delta[key] == 2

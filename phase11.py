@@ -40,15 +40,6 @@ def error(message, code="AB1004", status_code=400, data=None):
     )
 
 
-def session(request):
-    value = active_session(request)
-    return value
-
-
-def secured(request):
-    return session(request) is not None
-
-
 def stable_number(value):
     return int(hashlib.sha256(str(value).encode()).hexdigest()[:8], 16)
 
@@ -65,7 +56,7 @@ def _rule(row):
 
 
 async def convert_position(request):
-    auth = session(request)
+    auth = active_session(request)
     if not auth:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
@@ -128,7 +119,7 @@ async def convert_position(request):
 
 
 async def search_scrip(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     exchange, query = str(data.get("exchange", "")).upper(), str(data.get("searchscrip", "")).upper()
@@ -144,7 +135,7 @@ async def search_scrip(request):
 
 
 async def individual_order_details(request):
-    auth = session(request)
+    auth = active_session(request)
     if not auth:
         return failed("Invalid or expired token", 403)
     order_id = request.path_params.get("order_id", "")
@@ -157,7 +148,14 @@ async def individual_order_details(request):
 
 
 def _gtt_error(request):
-    return failed("Invalid or expired token", 403) if not session(request) else None
+    return failed("Invalid or expired token", 403) if not active_session(request) else None
+
+
+def next_gtt_id(conn):
+    value = conn.execute(
+        "SELECT COALESCE(MAX(CAST(id AS INTEGER)), 0) FROM gtt_rules"
+    ).fetchone()[0]
+    return str(value + 1)
 
 
 async def gtt_create(request):
@@ -169,12 +167,12 @@ async def gtt_create(request):
     if any(data.get(name) in (None, "") for name in required):
         return error("Invalid GTT parameters", "AB9001")
     with connect() as conn:
-        row = conn.execute("SELECT COUNT(*) FROM gtt_rules").fetchone()[0]
-        rule_id = str(row + 1)
+        conn.execute("BEGIN IMMEDIATE")
+        rule_id = next_gtt_id(conn)
         stamp = now()
         conn.execute(
             "INSERT INTO gtt_rules VALUES (?, ?, 'NEW', ?, ?, ?)",
-            (rule_id, session(request)["client_code"], json.dumps(data, sort_keys=True), stamp, stamp),
+            (rule_id, active_session(request)["client_code"], json.dumps(data, sort_keys=True), stamp, stamp),
         )
     return result({"id": rule_id})
 
@@ -184,7 +182,7 @@ async def gtt_modify(request):
         return bad
     data = await payload(request)
     rule_id = str(data.get("id", ""))
-    auth = session(request)
+    auth = active_session(request)
     with connect() as conn:
         row = conn.execute("SELECT * FROM gtt_rules WHERE id=? AND client_code=?", (rule_id, auth["client_code"])).fetchone()
         if row is None:
@@ -199,7 +197,7 @@ async def gtt_cancel(request):
     if (bad := _gtt_error(request)):
         return bad
     data = await payload(request)
-    rule_id, auth = str(data.get("id", "")), session(request)
+    rule_id, auth = str(data.get("id", "")), active_session(request)
     with connect() as conn:
         row = conn.execute("SELECT id FROM gtt_rules WHERE id=? AND client_code=?", (rule_id, auth["client_code"])).fetchone()
         if row is None:
@@ -211,7 +209,7 @@ async def gtt_cancel(request):
 async def gtt_details(request):
     if (bad := _gtt_error(request)):
         return bad
-    data, auth = await payload(request), session(request)
+    data, auth = await payload(request), active_session(request)
     with connect() as conn:
         row = conn.execute("SELECT * FROM gtt_rules WHERE id=? AND client_code=?", (str(data.get("id", "")), auth["client_code"])).fetchone()
     return error("Invalid GTT rule id", "AB9013") if row is None else result(_rule(row))
@@ -220,7 +218,7 @@ async def gtt_details(request):
 async def gtt_list(request):
     if (bad := _gtt_error(request)):
         return bad
-    data, auth = await payload(request), session(request)
+    data, auth = await payload(request), active_session(request)
     statuses = data.get("status", [])
     if not isinstance(statuses, list):
         return error("status must be a list", "AB9004")
@@ -239,7 +237,7 @@ async def gtt_list(request):
 
 
 async def oi_data(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     try:
@@ -260,7 +258,7 @@ async def oi_data(request):
 
 
 async def margin_api(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     positions = data.get("positions", [])
@@ -286,7 +284,7 @@ async def margin_api(request):
 
 
 async def estimate_charges(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     orders = data.get("orders", [])
@@ -311,7 +309,7 @@ async def estimate_charges(request):
 
 
 async def verify_dis(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if not data.get("isin") or not data.get("quantity"):
@@ -323,7 +321,7 @@ async def verify_dis(request):
 
 
 async def generate_tpin(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if not all(data.get(key) for key in ("dpId", "ReqId", "boid", "pan")):
@@ -332,7 +330,7 @@ async def generate_tpin(request):
 
 
 async def transaction_status(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if not data.get("ReqId"):
@@ -347,7 +345,7 @@ async def transaction_status(request):
 
 
 async def option_greek(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if not data.get("name") or not data.get("expirydate"):
@@ -379,7 +377,7 @@ def derivatives_rows(kind):
 
 
 async def gainers_losers(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if data.get("datatype") not in {"PercOIGainers", "PercOILosers", "PercPriceGainers", "PercPriceLosers"}:
@@ -393,13 +391,13 @@ async def gainers_losers(request):
 
 
 async def put_call_ratio(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     return result(derivatives_rows("pcr"))
 
 
 async def oi_buildup(request):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if data.get("datatype") not in {"Long Built Up", "Short Built Up", "Short Covering", "Long Unwinding"}:
@@ -413,7 +411,7 @@ async def oi_buildup(request):
 
 
 async def intraday(request, exchange):
-    if not secured(request):
+    if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     names = ("SBIN-EQ", "RELIANCE-EQ", "NIFTY")
     return result([{"exchange": exchange, "SymbolName": name, "Multiplier": "5.0" if name != "NIFTY" else "1.0"} for name in names])

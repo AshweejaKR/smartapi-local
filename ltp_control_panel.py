@@ -68,6 +68,7 @@ class LTPControlPanel:
         self.adjustment_mode = tk.StringVar(value="Value")
         self.status = tk.StringVar(value=f"Server: {base_url}")
         self.hijack_enabled = False
+        self.active_hijack = None
 
         window.title("SmartAPI LTP Control")
         window.resizable(False, False)
@@ -119,13 +120,15 @@ class LTPControlPanel:
     def toggle_hijack(self) -> None:
         symbol, exchange, token = self.stocks[self.stock.get()]
         if self.hijack_enabled:
+            target = self.active_hijack or (exchange, token)
             try:
-                set_mode(self.base_url, exchange, token, "YAHOO")
+                set_mode(self.base_url, target[0], target[1], "YAHOO")
             except (httpx.HTTPError, RuntimeError) as exc:
                 self.status.set(f"Error: {exc}")
                 messagebox.showerror("HIJACK update failed", str(exc))
                 return
             self.hijack_enabled = False
+            self.active_hijack = None
             self.status.set(f"{symbol} returned to YAHOO mode")
         else:
             self.hijack_enabled = True
@@ -133,6 +136,13 @@ class LTPControlPanel:
         self.set_controls()
 
     def select_stock(self, _=None) -> None:
+        if self.active_hijack:
+            try:
+                set_mode(self.base_url, self.active_hijack[0], self.active_hijack[1], "YAHOO")
+            except (httpx.HTTPError, RuntimeError) as exc:
+                self.show_error(exc)
+                return
+        self.active_hijack = None
         self.hijack_enabled = False
         self.ltp.set("100.00")
         self.set_controls()
@@ -159,6 +169,7 @@ class LTPControlPanel:
     def save_ltp(self, exchange: str, token: str, price: float) -> None:
         symbol = self.stocks[self.stock.get()][0]
         update_ltp(self.base_url, exchange, token, f"{price:.8f}")
+        self.active_hijack = (exchange, token)
         self.ltp.set(f"{price:.2f}")
         self.status.set(f"Updated {symbol} LTP to {price:.2f}")
 

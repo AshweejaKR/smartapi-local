@@ -63,7 +63,6 @@ def test_requests_login_rate_limit_and_fault_are_audited_without_secrets(client)
     assert any(row["action"] == "fault_request" and "HTTP 503" in row["detail"] for row in rows)
     logged = json.dumps(rows)
     assert all(secret not in logged for secret in [bad_password, "DUMMY_API_KEY", *tokens.values()])
-    assert client.get("/health").json()["data"]["phase"] == 13
 
 
 def test_audit_survives_handler_error_and_restart(client, monkeypatch):

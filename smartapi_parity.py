@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64, hashlib, hmac, json, math, os, sqlite3, struct, time
+import logzero
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -11,8 +12,10 @@ from auth import password_hash
 ROOT = Path(__file__).resolve().parent
 SECRET = {"password", "totp", "apikey", "api_key", "jwttoken", "refreshtoken", "feedtoken", "authorization", "email", "mobileno"}
 DYNAMIC = {"jwttoken", "refreshtoken", "feedtoken", "orderid", "uniqueorderid", "exchangeorderid", "updatetime", "tradedate", "filltime", "timestamp", "ltp", "price", "fillprice", "averageprice", "open", "high", "low", "close"}
-OPEN = {"OPEN", "PENDING", "TRIGGER PENDING"}
 FINAL = {"COMPLETE", "FILLED", "REJECTED", "CANCELLED"}
+
+# SmartAPI uses logzero and may log request headers, including X-PrivateKey.
+logzero.logger.disabled = True
 
 
 def flag(key, default=False):
@@ -92,8 +95,6 @@ def diff(a, b, path="", out=None):
 
 def call(func):
     delay = float(cfg("PARITY_API_DELAY", 1))
-    if delay:
-        time.sleep(delay)
     try:
         return {"exception": None, "result": func()}
     except Exception as exc:
@@ -138,6 +139,7 @@ class Parity:
         self.stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.cases = []
         self.orders = {"REAL": set(), "LOCAL": set()}
+        self.order_requests = {"REAL": {}, "LOCAL": {}}
         self.tokens = {"REAL": set(), "LOCAL": set()}
         self.delta = {}
         self.cleanup = {"enabled": self.cleanup_on, "cancelled": [], "closed": [], "errors": []}
@@ -199,7 +201,9 @@ class Parity:
         order_id = data.get("orderid")
         if not order_id:
             return
-        self.orders[target].add(str(order_id))
+        order_id = str(order_id)
+        self.orders[target].add(order_id)
+        self.order_requests[target][order_id] = {"instrument": dict(instrument), "request": dict(request)}
         self.tokens[target].add(str(instrument["symboltoken"]))
         if request["ordertype"] != "MARKET" or self.wait(target, str(order_id)) not in {"COMPLETE", "FILLED"}:
             return
@@ -248,11 +252,31 @@ class Parity:
         results = []
         for row in rows:
             order_id = str(row.get("orderid"))
-            if order_id in self.orders[target] and str(row.get("status", "")).upper() in OPEN:
+            status = str(row.get("status", "")).upper()
+            if order_id in self.orders[target] and status not in FINAL:
                 result = client.cancelOrder(order_id, row.get("variety", "NORMAL"))
                 results.append(result)
                 self.cleanup["cancelled"].append({"target": target, "orderid": order_id, "result": clean(result)})
         return results
+
+    def refresh_delta(self, target):
+        """Rebuild controlled filled quantity from tracked broker orders, including LIMIT fills."""
+        client = self.real if target == "REAL" else self.local
+        rows = (client.orderBook() or {}).get("data") or []
+        self.delta = {key: value for key, value in self.delta.items() if key[0] != target}
+        for row in rows:
+            order_id = str(row.get("orderid"))
+            meta = self.order_requests[target].get(order_id)
+            if not meta or str(row.get("status", "")).upper() not in {"COMPLETE", "FILLED"}:
+                continue
+            request, instrument = meta["request"], meta["instrument"]
+            quantity = int(row.get("filledshares") or row.get("filled_quantity") or request["quantity"])
+            if quantity <= 0:
+                continue
+            key = (target, instrument["exchange"], instrument["tradingsymbol"],
+                   instrument["symboltoken"], request["producttype"])
+            signed = quantity if request["transactiontype"] == "BUY" else -quantity
+            self.delta[key] = self.delta.get(key, 0) + signed
 
     def cleanup_all(self):
         if not self.cleanup_on:
@@ -260,6 +284,7 @@ class Parity:
         for target, client in (("REAL", self.real), ("LOCAL", self.local)):
             try:
                 self.cancel_open(target)
+                self.refresh_delta(target)
                 if self.close:
                     for (owner, exchange, symbol, token, product), quantity in list(self.delta.items()):
                         if owner != target or not quantity:
@@ -270,6 +295,25 @@ class Parity:
                         self.cleanup["closed"].append({"target": target, "result": clean(result)})
             except Exception as exc:
                 self.cleanup["errors"].append(f"{target}: {type(exc).__name__}: {exc}")
+
+    def cleanup_local_user(self):
+        user = getattr(self, "user", None)
+        if not user:
+            return
+        try:
+            with sqlite3.connect(self.db) as conn:
+                conn.execute(
+                    "DELETE FROM order_events WHERE order_id IN "
+                    "(SELECT order_id FROM orders WHERE client_code=?)", (user,)
+                )
+                for table in ("sessions", "trades", "orders", "positions", "holdings", "gtt_rules", "accounts"):
+                    conn.execute(f"DELETE FROM {table} WHERE client_code=?", (user,))
+                conn.execute("DELETE FROM users WHERE client_code=?", (user,))
+            self.cleanup["local_user_deleted"] = user
+        except Exception as exc:
+            self.cleanup["errors"].append(
+                f"LOCAL_USER: {type(exc).__name__}: {exc}"
+            )
 
     def reports(self):
         for case in self.cases:
@@ -455,6 +499,7 @@ def run():
             p.add("J5", "logout", {"clientcode": keys["CLIENT_ID"]}, {"clientcode": p.user},
                   lambda: p.real.terminateSession(keys["CLIENT_ID"]), lambda: p.local.terminateSession(p.user))
             p.add("J6", "request after logout", {}, {}, p.real.rmsLimit, p.local.rmsLimit)
+        p.cleanup_local_user()
         reports = p.reports()
     return reports
 
