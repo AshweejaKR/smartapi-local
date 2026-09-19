@@ -1,14 +1,8 @@
 import hashlib
-import socket
 import sqlite3
-import threading
-import time
-
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 from SmartApi import SmartConnect
-import uvicorn
 
 import app as app_module
 
@@ -136,35 +130,10 @@ def test_funds_persist_and_cannot_be_overdrawn(tmp_path, monkeypatch):
     assert balance == 1000.5
 
 
-def test_admin_created_user_works_with_official_sdk(tmp_path, monkeypatch):
-    monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "sdk.db")
-    monkeypatch.chdir(tmp_path)  # The SDK writes its own log directory.
-    probe = socket.socket()
-    probe.bind(("127.0.0.1", 0))
-    port = probe.getsockname()[1]
-    probe.close()
-    server = uvicorn.Server(
-        uvicorn.Config(app_module.app, host="127.0.0.1", port=port, log_level="error")
-    )
-    thread = threading.Thread(target=server.run, daemon=True)
-    thread.start()
-    deadline = time.time() + 5
-    while not server.started and time.time() < deadline:
-        time.sleep(0.01)
-    assert server.started
-    root = f"http://127.0.0.1:{port}"
-    try:
-        added = httpx.post(f"{root}/admin/users/add", data=USER, timeout=5)
-        assert added.status_code == 303
-        sdk = SmartConnect(api_key=USER["api_key"], root=root, timeout=5)
-        session = sdk.generateSession(
-            USER["client_code"], USER["password"], USER["totp"]
-        )
-        assert session["status"] is True
-        assert session["data"]["jwtToken"]
-        assert sdk.getProfile(session["data"]["refreshToken"])["data"][
-            "clientcode"
-        ] == USER["client_code"]
-    finally:
-        server.should_exit = True
-        thread.join(timeout=5)
+def test_admin_created_user_works_with_official_sdk(sdk_server):
+    s = sdk_server
+    assert s.http.post("/admin/users/add", data=USER).status_code == 303
+    sdk = SmartConnect(api_key=USER["api_key"], root=s.root, timeout=5)
+    session = sdk.generateSession(USER["client_code"], USER["password"], USER["totp"])
+    assert session["status"] is True and session["data"]["jwtToken"]
+    assert sdk.getProfile(session["data"]["refreshToken"])["data"]["clientcode"] == USER["client_code"]
