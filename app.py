@@ -161,7 +161,8 @@ async def dispatch_rest(request: Request):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    server_addresses()
+    if os.getenv("SMARTAPI_STARTUP_BANNER", "1").lower() not in {"0", "false", "no"}:
+        server_addresses()
     checker = asyncio.create_task(order_checker())
     try:
         yield
