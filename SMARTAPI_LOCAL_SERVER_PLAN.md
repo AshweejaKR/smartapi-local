@@ -50,7 +50,7 @@ Rules:
 | 13 | SDK regression tests | DONE |
 | 14 | Real vs local parity | IN PROGRESS |
 
-Phase 13 baseline: 136 regression tests passed, live Yahoo verification passed, restart persistence verified.
+Phase 13 acceptance covered regression tests, live Yahoo verification and restart persistence.
 
 ## Phase 14 — Real vs local parity
 
