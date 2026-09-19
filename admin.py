@@ -32,15 +32,6 @@ def init_admin(path):
     DB_PATH = Path(path)
     with connect() as conn:
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS accounts ("
-            "client_code TEXT PRIMARY KEY, available_balance REAL NOT NULL DEFAULT 0, "
-            "used_funds REAL NOT NULL DEFAULT 0, realized_pnl REAL NOT NULL DEFAULT 0)"
-        )
-        conn.execute(
-            "INSERT OR IGNORE INTO accounts(client_code) "
-            "SELECT client_code FROM users"
-        )
-        conn.execute(
             "CREATE TABLE IF NOT EXISTS audit_log ("
             "id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, action TEXT NOT NULL, "
             "detail TEXT NOT NULL, client_code TEXT NOT NULL DEFAULT '')"
