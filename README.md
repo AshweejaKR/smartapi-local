@@ -11,6 +11,10 @@ SmartConnect(api_key="DUMMY_API_KEY", root="http://127.0.0.1:8000")
 ```text
 pip install -r requirements.txt
 uvicorn app:app --reload
+
+# development/tests
+pip install -r requirements-dev.txt
+pytest
 ```
 
 Admin UI: `http://127.0.0.1:8000/admin`
