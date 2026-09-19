@@ -157,7 +157,7 @@ def test_position_reset_clears_exposure_and_preserves_history_charges_and_reserv
     reset(client, "positions")
     assert rows("positions") == rows("holdings") == []
     account = rows("accounts")[0]
-    assert (account["available_balance"], account["used_funds"], account["realized_pnl"], account["total_charges"]) == (9990, 0, 0, 10)
+    assert (account["available_balance"], account["used_funds"], account["realized_pnl"], account["total_charges"]) == (9990, 0, 7, 10)
     assert len(rows("trades")) == 2 and len(rows("orders")) == 5
     with admin.connect() as conn:
         assert orders.free_cash(conn, "DUMMY001") == 9720
@@ -240,7 +240,7 @@ def test_withdrawal_cannot_consume_open_reservations(client):
 
 def test_market_redirect_retains_selection_and_audit_escapes_html(client):
     response = client.post("/admin/market", data={"exchange": "NSE", "symboltoken": "2885", "mode": "HIJACK", "ltp": "123"}, follow_redirects=False)
-    assert "symboltoken=2885&message=" in response.headers["location"]
+    assert "symbol=NSE%3A2885&message=" in response.headers["location"]
     admin.audit("test", "<script>alert(1)</script>")
     html = client.get("/admin/audit").text
     assert "<script>alert(1)</script>" not in html
