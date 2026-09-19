@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 
 DB_PATH = None
+CURRENT = None
 LOCK = threading.Lock()
 LOGGER = logging.getLogger("smartapi.faults")
 LOGGER.setLevel(logging.INFO)
@@ -23,7 +24,7 @@ MODE_ALIASES = {
 
 
 def init_faults(path):
-    global DB_PATH
+    global DB_PATH, CURRENT
     DB_PATH = Path(path)
     with connect() as conn:
         conn.execute(
@@ -37,6 +38,14 @@ def init_faults(path):
             "started_at REAL NOT NULL, ended_at REAL)"
         )
         conn.execute("INSERT OR IGNORE INTO fault_state(id, mode) VALUES (1, '')")
+        row = _state(conn)
+        now = time.time()
+        if row and row["mode"] and row["ends_at"] > now:
+            CURRENT = dict(row)
+        else:
+            if row and row["mode"]:
+                _finish(conn, row, now, "expired")
+            CURRENT = None
 
 
 def connect():
@@ -78,42 +87,49 @@ def _state(conn):
 
 
 def active_fault():
+    global CURRENT
     now = time.time()
-    with LOCK, connect() as conn:
-        row = _state(conn)
-        if not row or not row["mode"]:
+    with LOCK:
+        if not CURRENT:
             return None
-        if row["ends_at"] <= now:
-            _finish(conn, row, now, "expired")
+        if CURRENT["ends_at"] <= now:
+            with connect() as conn:
+                _finish(conn, CURRENT, now, "expired")
+            CURRENT = None
             return None
-        return dict(row)
+        return dict(CURRENT)
 
 
 def start_fault(mode, duration):
+    global CURRENT
     mode = normalize_mode(mode)
     duration = float(duration)
     if mode is None or duration <= 0 or duration != duration:
         raise ValueError("invalid fault mode or duration")
     now = time.time()
     with LOCK, connect() as conn:
-        current = _state(conn)
-        if current and current["mode"]:
-            _finish(conn, current, now, "replaced")
+        if CURRENT:
+            _finish(conn, CURRENT, now, "replaced")
         ends_at = now + duration
         conn.execute(
             "UPDATE fault_state SET mode=?, started_at=?, ends_at=? WHERE id=1",
             (mode, now, ends_at),
         )
-        conn.execute("INSERT INTO fault_events(mode, started_at) VALUES (?, ?)", (mode, now))
+        event_id = conn.execute(
+            "INSERT INTO fault_events(mode, started_at) VALUES (?, ?)", (mode, now)
+        ).lastrowid
+        CURRENT = {"mode": mode, "started_at": now, "ends_at": ends_at, "event_id": event_id}
         LOGGER.info("fault start mode=%s started_at=%.3f ends_at=%.3f", mode, now, ends_at)
-    return {"mode": mode, "started_at": now, "ends_at": ends_at}
+    return dict(CURRENT)
 
 
 def clear_fault():
-    with LOCK, connect() as conn:
-        row = _state(conn)
-        if row and row["mode"]:
-            _finish(conn, row, time.time(), "cleared")
+    global CURRENT
+    with LOCK:
+        if CURRENT:
+            with connect() as conn:
+                _finish(conn, CURRENT, time.time(), "cleared")
+            CURRENT = None
 
 
 def fault_response(mode):
