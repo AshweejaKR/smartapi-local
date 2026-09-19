@@ -172,7 +172,7 @@ async def profile(request: Request):
         return failed("Invalid or expired token", 403)
     with connect() as conn:
         user = conn.execute("SELECT * FROM users WHERE client_code = ?", (session["client_code"],)).fetchone()
-    return {"status": True, "message": "SUCCESS", "errorcode": "", "data": profile_data(user)} if user and user["enabled"] else failed("User is disabled", 403)
+    return {"status": True, "message": "SUCCESS", "errorcode": "", "data": profile_data(user)}
 
 
 async def logout(request: Request):
