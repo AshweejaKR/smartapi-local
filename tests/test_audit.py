@@ -69,8 +69,10 @@ def test_audit_survives_handler_error_and_restart(client, monkeypatch):
     async def broken_profile(request):
         raise RuntimeError("private exception context")
 
+    tokens = sign_in(client)
+    headers = {"Authorization": "Bearer " + tokens["jwtToken"]}
     monkeypatch.setattr(app_module, "profile", broken_profile)
-    assert client.get(PROFILE).status_code == 500
+    assert client.get(PROFILE, headers=headers).status_code == 500
     before = entries()
     assert before[-1]["detail"] == f"GET {PROFILE} HTTP 500"
     assert "private exception context" not in json.dumps(before)
