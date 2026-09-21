@@ -1,5 +1,5 @@
 """Persistent SmartAPI portfolio storage and views."""
-from datetime import datetime
+import asyncio
 from pathlib import Path
 import sqlite3
 
@@ -8,6 +8,14 @@ from charges import TRADE_FIELDS, pnl_values
 from market import get_effective_ltp
 
 DB_PATH = None
+ORDER_STATUS = {
+    "PENDING": "open pending", "OPEN": "open", "FILLED": "complete",
+    "REJECTED": "rejected", "CANCELLED": "cancelled",
+}
+
+
+def api_order_status(value):
+    return ORDER_STATUS.get(str(value).upper(), str(value).lower())
 
 
 def connect():
@@ -20,7 +28,7 @@ def init_portfolio(path):
     global DB_PATH
     DB_PATH = Path(path)
     with connect() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS accounts (client_code TEXT PRIMARY KEY, available_balance REAL NOT NULL DEFAULT 0)")
+        conn.execute("CREATE TABLE IF NOT EXISTS accounts (client_code TEXT PRIMARY KEY, available_balance REAL NOT NULL DEFAULT 0, used_funds REAL NOT NULL DEFAULT 0, realized_pnl REAL NOT NULL DEFAULT 0)")
         columns = {row[1] for row in conn.execute("PRAGMA table_info(accounts)")}
         for name in ("used_funds", "realized_pnl"):
             if name not in columns:
@@ -30,27 +38,6 @@ def init_portfolio(path):
         conn.execute("CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY, client_code TEXT NOT NULL, trade_id TEXT UNIQUE NOT NULL, order_id TEXT NOT NULL, exchange TEXT NOT NULL, tradingsymbol TEXT NOT NULL, symboltoken TEXT NOT NULL, transaction_type TEXT NOT NULL, product_type TEXT NOT NULL, quantity INTEGER NOT NULL, price REAL NOT NULL, trade_time TEXT NOT NULL)")
         conn.execute("CREATE TABLE IF NOT EXISTS positions (client_code TEXT NOT NULL, exchange TEXT NOT NULL, symboltoken TEXT NOT NULL, product_type TEXT NOT NULL, tradingsymbol TEXT NOT NULL, net_qty INTEGER NOT NULL DEFAULT 0, buy_qty INTEGER NOT NULL DEFAULT 0, sell_qty INTEGER NOT NULL DEFAULT 0, buy_amount REAL NOT NULL DEFAULT 0, sell_amount REAL NOT NULL DEFAULT 0, avg_price REAL NOT NULL DEFAULT 0, realized_pnl REAL NOT NULL DEFAULT 0, last_price REAL NOT NULL DEFAULT 0, PRIMARY KEY(client_code, exchange, symboltoken, product_type))")
         conn.execute("CREATE TABLE IF NOT EXISTS holdings (client_code TEXT NOT NULL, exchange TEXT NOT NULL, symboltoken TEXT NOT NULL, tradingsymbol TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 0, average_price REAL NOT NULL DEFAULT 0, isin TEXT NOT NULL DEFAULT '', last_price REAL NOT NULL DEFAULT 0, PRIMARY KEY(client_code, exchange, symboltoken))")
-
-
-def save_order(client_code, values):
-    now = values.get("created_at") or datetime.now().strftime("%d-%b-%Y %H:%M:%S")
-    with connect() as conn:
-        conn.execute("INSERT OR REPLACE INTO orders (client_code, order_id, variety, order_type, product_type, duration, price, trigger_price, quantity, disclosed_quantity, transaction_type, exchange, tradingsymbol, symboltoken, status, filled_quantity, average_price, reserved_funds, text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (client_code, values["order_id"], values.get("variety", "NORMAL"), values.get("order_type", "MARKET"), values.get("product_type", "CNC"), values.get("duration", "DAY"), values.get("price", 0), values.get("trigger_price", 0), values["quantity"], values.get("disclosed_quantity", 0), values["transaction_type"], values["exchange"], values["tradingsymbol"], str(values["symboltoken"]), values.get("status", "OPEN"), values.get("filled_quantity", 0), values.get("average_price", 0), values.get("reserved_funds", 0), values.get("text", ""), now))
-
-
-def save_trade(client_code, values):
-    with connect() as conn:
-        conn.execute("INSERT OR REPLACE INTO trades (client_code, trade_id, order_id, exchange, tradingsymbol, symboltoken, transaction_type, product_type, quantity, price, trade_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (client_code, values["trade_id"], values["order_id"], values["exchange"], values["tradingsymbol"], str(values["symboltoken"]), values["transaction_type"], values.get("product_type", "CNC"), values["quantity"], values["price"], values.get("trade_time") or datetime.now().strftime("%d-%b-%Y %H:%M:%S")))
-
-
-def save_position(client_code, values):
-    with connect() as conn:
-        conn.execute("INSERT OR REPLACE INTO positions (client_code, exchange, symboltoken, product_type, tradingsymbol, net_qty, buy_qty, sell_qty, buy_amount, sell_amount, avg_price, realized_pnl, last_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (client_code, values["exchange"], str(values["symboltoken"]), values.get("product_type", "CNC"), values["tradingsymbol"], values.get("net_qty", 0), values.get("buy_qty", 0), values.get("sell_qty", 0), values.get("buy_amount", 0), values.get("sell_amount", 0), values.get("avg_price", 0), values.get("realized_pnl", 0), values.get("last_price", 0)))
-
-
-def save_holding(client_code, values):
-    with connect() as conn:
-        conn.execute("INSERT OR REPLACE INTO holdings (client_code, exchange, symboltoken, tradingsymbol, quantity, average_price, isin, last_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (client_code, values["exchange"], str(values["symboltoken"]), values["tradingsymbol"], values.get("quantity", 0), values.get("average_price", 0), values.get("isin", ""), values.get("last_price", 0)))
 
 
 def price(row):
@@ -66,7 +53,8 @@ def result(data):
 
 def order_view(row):
     filled = row["filled_quantity"]
-    return {"variety": row["variety"], "ordertype": row["order_type"], "producttype": row["product_type"], "duration": row["duration"], "price": row["price"], "triggerprice": row["trigger_price"], "quantity": row["quantity"], "disclosedquantity": row["disclosed_quantity"], "transactiontype": row["transaction_type"], "exchange": row["exchange"], "tradingsymbol": row["tradingsymbol"], "symboltoken": row["symboltoken"], "orderid": row["order_id"], "uniqueorderid": row["unique_order_id"], "status": row["status"], "orderstatus": row["status"], "filledshares": filled, "unfilledshares": row["quantity"] - filled, "averageprice": row["average_price"], "text": row["text"], "updatetime": row["updated_at"]}
+    status = api_order_status(row["status"])
+    return {"variety": row["variety"], "ordertype": row["order_type"], "producttype": row["product_type"], "duration": row["duration"], "price": row["price"], "triggerprice": row["trigger_price"], "quantity": row["quantity"], "disclosedquantity": row["disclosed_quantity"], "transactiontype": row["transaction_type"], "exchange": row["exchange"], "tradingsymbol": row["tradingsymbol"], "symboltoken": row["symboltoken"], "orderid": row["order_id"], "uniqueorderid": row["unique_order_id"], "status": status, "orderstatus": status, "filledshares": filled, "unfilledshares": row["quantity"] - filled, "averageprice": row["average_price"], "text": row["text"], "updatetime": row["updated_at"]}
 
 
 def trade_view(row):
@@ -94,10 +82,10 @@ async def rms_limit(request):
         account = conn.execute("SELECT * FROM accounts WHERE client_code=?", (auth["client_code"],)).fetchone()
         rows = conn.execute("SELECT * FROM positions WHERE client_code=?", (auth["client_code"],)).fetchall()
         reserved = conn.execute("SELECT COALESCE(SUM(reserved_funds), 0) FROM orders WHERE client_code=? AND status IN ('OPEN', 'PENDING')", (auth["client_code"],)).fetchone()[0]
-    positions = [position_view(row) for row in rows]
+    positions = await asyncio.to_thread(lambda: [position_view(row) for row in rows])
     used = round((account["used_funds"] if account else 0) + reserved, 2)
     net = round((account["available_balance"] if account else 0) - used, 2)
-    realized = round((account["realized_pnl"] if account else 0) + sum(row["realised"] for row in positions), 2)
+    realized = round(account["realized_pnl"] if account else 0, 2)
     unrealized = round(sum(row["unrealised"] for row in positions), 2)
     return result({"net": net, "availablecash": net, "availableintradaypayin": 0, "availablelimitmargin": 0, "collateral": 0, "m2munrealized": unrealized, "m2mrealized": realized, "utiliseddebits": used, "utilisedcredits": 0, "spanmargin": 0, "exposuremargin": 0, "varmargin": 0, "adhocmargin": 0, "cashmarginavailable": net, "rmslimit": net, "unrealizedprofitandloss": unrealized, "realizedprofitandloss": realized, **pnl_values(realized, unrealized, account["total_charges"] if account else 0)})
 
@@ -126,7 +114,8 @@ async def positions(request):
         return failed("Invalid or expired token", 403)
     with connect() as conn:
         rows = conn.execute("SELECT * FROM positions WHERE client_code=? ORDER BY exchange, tradingsymbol", (auth["client_code"],)).fetchall()
-    return result([position_view(row) for row in rows])
+    values = await asyncio.to_thread(lambda: [position_view(row) for row in rows])
+    return result(values)
 
 
 async def holdings(request, all_holdings=False):
@@ -135,7 +124,7 @@ async def holdings(request, all_holdings=False):
         return failed("Invalid or expired token", 403)
     with connect() as conn:
         rows = conn.execute("SELECT * FROM holdings WHERE client_code=? ORDER BY exchange, tradingsymbol", (auth["client_code"],)).fetchall()
-    values = [holding_view(row) for row in rows]
+    values = await asyncio.to_thread(lambda: [holding_view(row) for row in rows])
     if not all_holdings:
         return result(values)
     value = round(sum(row["ltp"] * row["quantity"] for row in values), 2)

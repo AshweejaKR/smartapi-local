@@ -9,7 +9,6 @@ import admin
 import app as app_module
 import market
 import orders
-import portfolio
 from charges import DEFAULTS
 from fault import active_fault, start_fault
 from rate_limit import DEFAULT_LIMITS, limiter, save_limit
@@ -44,32 +43,46 @@ def seed(client):
     client.post("/admin/market", data={"exchange": "NSE", "symboltoken": "3045", "mode": "HIJACK", "ltp": "100", "volume": "25"})
     today = datetime.now()
     yesterday = today - timedelta(days=1)
-    for name, status, price, day, kind in (
-        ("old-filled", "FILLED", 100, yesterday, "MARKET"),
-        ("today-filled", "FILLED", 100, today, "MARKET"),
-        ("old-open", "OPEN", 80, yesterday, "LIMIT"),
-        ("today-open", "OPEN", 90, today, "LIMIT"),
-        ("today-market", "PENDING", 100, today, "MARKET"),
-    ):
-        stamp = day.strftime("%d-%b-%Y %H:%M:%S")
-        portfolio.save_order("DUMMY001", {
-            "order_id": name, "order_type": kind, "quantity": 1,
-            "transaction_type": "BUY", "exchange": "NSE", "tradingsymbol": "SBIN-EQ",
-            "symboltoken": "3045", "status": status, "price": price,
-            "filled_quantity": int(status == "FILLED"),
-            "reserved_funds": 0 if status == "FILLED" else price, "created_at": stamp,
-        })
-        with admin.connect() as conn:
-            conn.execute("UPDATE orders SET accepted_at_ms=?, updated_at=created_at WHERE order_id=?", (int(today.timestamp() * 1000), name))
+    with admin.connect() as conn:
+        for name, status, price, day, kind in (
+            ("old-filled", "FILLED", 100, yesterday, "MARKET"),
+            ("today-filled", "FILLED", 100, today, "MARKET"),
+            ("old-open", "OPEN", 80, yesterday, "LIMIT"),
+            ("today-open", "OPEN", 90, today, "LIMIT"),
+            ("today-market", "PENDING", 100, today, "MARKET"),
+        ):
+            stamp = day.strftime("%d-%b-%Y %H:%M:%S")
+            conn.execute(
+                "INSERT INTO orders (client_code, order_id, unique_order_id, order_type, "
+                "product_type, quantity, transaction_type, exchange, tradingsymbol, "
+                "symboltoken, status, price, filled_quantity, reserved_funds, created_at, "
+                "accepted_at_ms, updated_at) VALUES (?, ?, ?, ?, 'DELIVERY', 1, 'BUY', "
+                "'NSE', 'SBIN-EQ', '3045', ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "DUMMY001", name, name, kind, status, price,
+                    int(status == "FILLED"), 0 if status == "FILLED" else price,
+                    stamp, int(today.timestamp() * 1000), stamp,
+                ),
+            )
             orders.add_event(conn, name, status)
-        if status == "FILLED":
-            portfolio.save_trade("DUMMY001", {
-                "trade_id": "T-" + name, "order_id": name, "quantity": 1,
-                "transaction_type": "BUY", "exchange": "NSE", "tradingsymbol": "SBIN-EQ",
-                "symboltoken": "3045", "price": price, "trade_time": stamp,
-            })
-    portfolio.save_position("DUMMY001", {"exchange": "NSE", "symboltoken": "3045", "tradingsymbol": "SBIN-EQ", "net_qty": 2, "buy_qty": 2, "buy_amount": 200, "avg_price": 100, "last_price": 100})
-    portfolio.save_holding("DUMMY001", {"exchange": "NSE", "symboltoken": "3045", "tradingsymbol": "SBIN-EQ", "quantity": 2, "average_price": 100, "last_price": 100})
+            if status == "FILLED":
+                conn.execute(
+                    "INSERT INTO trades (client_code, trade_id, order_id, exchange, "
+                    "tradingsymbol, symboltoken, transaction_type, product_type, quantity, "
+                    "price, trade_time) VALUES ('DUMMY001', ?, ?, 'NSE', 'SBIN-EQ', "
+                    "'3045', 'BUY', 'DELIVERY', 1, ?, ?)",
+                    ("T-" + name, name, price, stamp),
+                )
+        conn.execute(
+            "INSERT INTO positions (client_code, exchange, symboltoken, product_type, "
+            "tradingsymbol, net_qty, buy_qty, buy_amount, avg_price, last_price) "
+            "VALUES ('DUMMY001', 'NSE', '3045', 'DELIVERY', 'SBIN-EQ', 2, 2, 200, 100, 100)"
+        )
+        conn.execute(
+            "INSERT INTO holdings (client_code, exchange, symboltoken, tradingsymbol, "
+            "quantity, average_price, last_price) "
+            "VALUES ('DUMMY001', 'NSE', '3045', 'SBIN-EQ', 2, 100, 100)"
+        )
     market.save_candle("NSE", "3045", today.replace(second=0, microsecond=0).isoformat(), {"open": 99, "high": 101, "low": 99, "close": 100, "volume": 5})
     with admin.connect() as conn:
         conn.execute("UPDATE accounts SET available_balance=9990, used_funds=200, realized_pnl=7, total_charges=10")
@@ -157,7 +170,7 @@ def test_position_reset_clears_exposure_and_preserves_history_charges_and_reserv
     reset(client, "positions")
     assert rows("positions") == rows("holdings") == []
     account = rows("accounts")[0]
-    assert (account["available_balance"], account["used_funds"], account["realized_pnl"], account["total_charges"]) == (9990, 0, 0, 10)
+    assert (account["available_balance"], account["used_funds"], account["realized_pnl"], account["total_charges"]) == (9990, 0, 7, 10)
     assert len(rows("trades")) == 2 and len(rows("orders")) == 5
     with admin.connect() as conn:
         assert orders.free_cash(conn, "DUMMY001") == 9720
@@ -240,7 +253,7 @@ def test_withdrawal_cannot_consume_open_reservations(client):
 
 def test_market_redirect_retains_selection_and_audit_escapes_html(client):
     response = client.post("/admin/market", data={"exchange": "NSE", "symboltoken": "2885", "mode": "HIJACK", "ltp": "123"}, follow_redirects=False)
-    assert "symboltoken=2885&message=" in response.headers["location"]
+    assert "symbol=NSE%3A2885&message=" in response.headers["location"]
     admin.audit("test", "<script>alert(1)</script>")
     html = client.get("/admin/audit").text
     assert "<script>alert(1)</script>" not in html

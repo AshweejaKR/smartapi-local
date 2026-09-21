@@ -3,7 +3,7 @@
 {% block title %}Dashboard - Local SmartAPI{% endblock %}
 {% block content %}
 <h1>Admin dashboard</h1>
-<p>{{ summary.users }} users ({{ summary.enabled }} enabled) ? Available cash: <strong>{{ "%.2f"|format(total) }}</strong> ? <a href="/admin/resets">Reset controls</a> ? <a href="/admin">Refresh</a></p>
+<p>{{ summary.users }} users ({{ summary.enabled }} enabled) · Available cash: <strong>{{ "%.2f"|format(total) }}</strong> · <a href="/admin/resets">Reset controls</a> · <a href="/admin">Refresh</a></p>
 <p class="muted">Tables show stored simulator state. Position and holding last prices are the latest stored fill prices. Refresh to update monitoring.</p>
 <div class="dashboard-grid">
 <section><h2>Current funds <a href="/admin/account">Manage</a></h2>

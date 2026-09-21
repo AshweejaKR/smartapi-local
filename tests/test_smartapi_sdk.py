@@ -189,7 +189,7 @@ def test_modify_and_cancel_never_fill(sdk_server):
         assert s.sdk.modifyOrder({"orderid": order, "quantity": 4})["status"] is False
     s.hijack(80)
     time.sleep(1.15)
-    assert all(row["status"] == "CANCELLED" for row in s.sdk.orderBook()["data"])
+    assert all(row["status"] == "cancelled" for row in s.sdk.orderBook()["data"])
     assert s.sdk.tradeBook()["data"] == []
     assert s.sdk.rmsLimit()["data"]["availablecash"] == 100000
     assert s.sdk.cancelOrder("unknown", "NORMAL")["status"] is False
@@ -238,7 +238,7 @@ def test_insufficient_cash_at_acceptance_and_fill(sdk_server):
         "action": "remove", "amount": 99900}).status_code == 303
     s.hijack(100)
     assert s.sdk.placeOrderFullResponse(ORDER)["status"] is False
-    assert s.sdk.orderBook()["data"][0]["status"] == "REJECTED"
+    assert s.sdk.orderBook()["data"][0]["status"] == "rejected"
     order = place(s, quantity=1)
     s.hijack(101)
     assert s.wait_order(order, "REJECTED")["text"] == "Insufficient funds"
@@ -297,3 +297,39 @@ def test_invalid_orders_return_envelope_without_mutation(sdk_server, changes):
     assert result and result["status"] is False
     assert result["errorcode"]
     assert sdk_server.sdk.orderBook()["data"] == []
+
+
+def test_limit_unknown_symbol_rejected(sdk_server):
+    result = sdk_server.sdk.placeOrderFullResponse({
+        **ORDER, "ordertype": "LIMIT", "price": "100",
+        "tradingsymbol": "NOPE-EQ", "symboltoken": "999999",
+    })
+    assert result["status"] is False and result["errorcode"] == "AB1018"
+
+
+def test_delivery_sell_without_holdings_rejected(sdk_server):
+    result = sdk_server.sdk.placeOrderFullResponse({
+        **ORDER, "transactiontype": "SELL", "quantity": 1,
+    })
+    assert result["status"] is False
+    assert "holdings" in result["message"].lower()
+
+
+def test_modify_cannot_change_symbol_or_side(sdk_server):
+    s = sdk_server
+    s.hijack(100)
+    order_id = place(s, ordertype="LIMIT", price="90")
+    for changes in (
+        {"transactiontype": "SELL"},
+        {"tradingsymbol": "RELIANCE-EQ", "symboltoken": "2885"},
+    ):
+        result = s.sdk.modifyOrder({"orderid": order_id, **changes})
+        assert result["status"] is False
+    assert s.sdk.cancelOrder(order_id, "NORMAL")["status"] is True
+
+
+def test_logout_rejects_mismatched_client_code(sdk_server):
+    s = sdk_server
+    result = s.sdk.terminateSession("OTHER001")
+    assert result["status"] is False
+    assert s.sdk.rmsLimit()["status"] is True

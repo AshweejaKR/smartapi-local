@@ -3,7 +3,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import os
 from pathlib import Path
-import socket
+import sys
 import sqlite3
 import time
 
@@ -12,7 +12,7 @@ from auth import generate_tokens, init_auth, login, logout, profile
 from charges import init_charges
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from fault import active_fault, fault_response, init_faults
+from fault import active_fault, fault_response, init_faults, slow_delay_seconds
 from market import candle_data, init_market, ltp_data, market_data
 from orders import (
     cancel_order, init_orders, modify_order, order_checker, place_order, stop_checker,
@@ -39,9 +39,9 @@ def init_db():
         )
 
     init_auth(DB_PATH)
+    init_portfolio(DB_PATH)
     init_admin(DB_PATH)
     init_market(DB_PATH)
-    init_portfolio(DB_PATH)
     with sqlite3.connect(DB_PATH) as conn:
         init_charges(conn)
     init_orders(DB_PATH)
@@ -50,22 +50,23 @@ def init_db():
     init_faults(DB_PATH)
 
 
-def server_addresses():
-    host = os.getenv("SMARTAPI_HOST", "0.0.0.0")
-    port = int(os.getenv("SMARTAPI_PORT", "8000"))
-    public = os.getenv("SMARTAPI_PUBLIC_HOST", "").strip()
+def _cli_value(name, default):
     try:
-        network = socket.gethostbyname(socket.gethostname())
-    except OSError:
-        network = "127.0.0.1"
+        return sys.argv[sys.argv.index(name) + 1]
+    except (ValueError, IndexError):
+        return default
 
-    base = f"http://{public or network}:{port}"
+
+def server_addresses():
+    host = os.getenv("SMARTAPI_HOST", _cli_value("--host", "127.0.0.1"))
+    port = int(os.getenv("SMARTAPI_PORT", _cli_value("--port", "8000")))
+    public = os.getenv("SMARTAPI_PUBLIC_HOST", "").strip()
+    base = f"http://{public or '127.0.0.1'}:{port}"
     print("\n" + "=" * 44)
     print(" SmartAPI Local Server")
     print("=" * 44)
     print(f"Bind       : {host}:{port}")
     print(f"Local      : http://127.0.0.1:{port}")
-    print(f"Network    : http://{network}:{port}")
     if public:
         print(f"Public     : http://{public}:{port}")
     print(f"Admin      : {base}/admin")
@@ -126,41 +127,43 @@ SDK_ROUTES = [
 ]
 
 
+CORE_HANDLERS = {
+    "/rest/auth/angelbroking/user/v1/loginByPassword": login,
+    "/rest/auth/angelbroking/jwt/v1/generateTokens": generate_tokens,
+    "/rest/secure/angelbroking/user/v1/getProfile": profile,
+    "/rest/secure/angelbroking/user/v1/logout": logout,
+    "/rest/secure/angelbroking/order/v1/getLtpData": ltp_data,
+    "/rest/secure/angelbroking/market/v1/quote": market_data,
+    "/rest/secure/angelbroking/historical/v1/getCandleData": candle_data,
+    "/rest/secure/angelbroking/order/v1/getOrderBook": order_book,
+    "/rest/secure/angelbroking/order/v1/getTradeBook": trade_book,
+    "/rest/secure/angelbroking/order/v1/placeOrder": place_order,
+    "/rest/secure/angelbroking/order/v1/modifyOrder": modify_order,
+    "/rest/secure/angelbroking/order/v1/cancelOrder": cancel_order,
+    "/rest/secure/angelbroking/user/v1/getRMS": rms_limit,
+    "/rest/secure/angelbroking/order/v1/getPosition": positions,
+}
+
+
 async def dispatch_rest(request: Request):
-    handlers = {
-        "/rest/auth/angelbroking/user/v1/loginByPassword": login,
-        "/rest/auth/angelbroking/jwt/v1/generateTokens": generate_tokens,
-        "/rest/secure/angelbroking/user/v1/getProfile": profile,
-        "/rest/secure/angelbroking/user/v1/logout": logout,
-        "/rest/secure/angelbroking/order/v1/getLtpData": ltp_data,
-        "/rest/secure/angelbroking/market/v1/quote": market_data,
-        "/rest/secure/angelbroking/historical/v1/getCandleData": candle_data,
-        "/rest/secure/angelbroking/order/v1/getOrderBook": order_book,
-        "/rest/secure/angelbroking/order/v1/getTradeBook": trade_book,
-        "/rest/secure/angelbroking/order/v1/placeOrder": place_order,
-        "/rest/secure/angelbroking/order/v1/modifyOrder": modify_order,
-        "/rest/secure/angelbroking/order/v1/cancelOrder": cancel_order,
-        "/rest/secure/angelbroking/user/v1/getRMS": rms_limit,
-        "/rest/secure/angelbroking/order/v1/getPosition": positions,
-    }
-    if handler := handlers.get(request.url.path):
+    path = request.scope["route"].path
+    if handler := CORE_HANDLERS.get(path):
         return await handler(request)
-    if request.url.path in {
+    if path in {
         "/rest/secure/angelbroking/portfolio/v1/getHolding",
         "/rest/secure/angelbroking/portfolio/v1/getAllHolding",
     }:
-        return await holdings(request, request.url.path.endswith("getAllHolding"))
-    if request.url.path.endswith("/details/" + request.path_params.get("order_id", "")):
+        return await holdings(request, path.endswith("getAllHolding"))
+    if path == "/rest/secure/angelbroking/order/v1/details/{order_id}":
         return await phase11.individual_order_details(request)
-    if handler := phase11.HANDLERS.get(request.url.path):
-        return await handler(request)
-    return error("Unknown SmartAPI route", "AB4040", 404)
+    return await phase11.HANDLERS[path](request)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    server_addresses()
+    if os.getenv("SMARTAPI_STARTUP_BANNER", "1").lower() not in {"0", "false", "no"}:
+        server_addresses()
     checker = asyncio.create_task(order_checker())
     try:
         yield
@@ -179,7 +182,7 @@ async def smartapi_faults(request: Request, call_next):
         if fault:
             request.state.fault_mode = fault["mode"]
             if fault["mode"] == "slow":
-                await asyncio.sleep(max(0, fault["ends_at"] - time.time()))
+                await asyncio.sleep(slow_delay_seconds())
             else:
                 return fault_response(fault["mode"])
     return await call_next(request)
@@ -221,7 +224,7 @@ async def smartapi_audit(request: Request, call_next):
 
 @app.get("/health")
 async def health():
-    return success({"service": "smartapi-local", "phase": 13})
+    return success({"service": "smartapi-local"})
 
 
 for method, path, name in SDK_ROUTES:
@@ -233,6 +236,6 @@ if __name__ == "__main__":
 
     uvicorn.run(
         app,
-        host=os.getenv("SMARTAPI_HOST", "0.0.0.0"),
+        host=os.getenv("SMARTAPI_HOST", "127.0.0.1"),
         port=int(os.getenv("SMARTAPI_PORT", "8000")),
     )

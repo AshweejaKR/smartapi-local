@@ -2,6 +2,7 @@
 import asyncio
 from contextlib import suppress
 from datetime import datetime
+import logging
 import math
 import os
 from pathlib import Path
@@ -13,10 +14,14 @@ from fastapi.responses import JSONResponse
 
 from auth import active_session, failed, payload
 from charges import TRADE_FIELDS, calculate_charges, pnl_values
-from market import MarketDataError, get_effective_ltp
+from market import MarketDataError, get_effective_ltp, mapping_for
 
 DB_PATH = None
+LOGGER = logging.getLogger("smartapi.orders")
 OPEN = ("OPEN", "PENDING")
+PRODUCTS = {"DELIVERY", "INTRADAY", "MARGIN", "CARRYFORWARD", "BO"}
+VARIETIES = {"NORMAL", "STOPLOSS", "AMO", "ROBO"}
+DURATIONS = {"DAY", "IOC"}
 
 
 def connect():
@@ -109,13 +114,18 @@ def parse_order(data, current=None):
     }
     if not all(symbols.values()):
         raise ValueError("Exchange, trading symbol and symbol token are required")
+    variety = str(value("variety", default="NORMAL")).upper()
+    product = str(value("producttype", "product_type", "DELIVERY")).upper()
+    duration = str(value("duration", default="DAY")).upper()
+    if variety not in VARIETIES:
+        raise ValueError("Invalid order variety")
+    if product not in PRODUCTS:
+        raise ValueError("Invalid product type")
+    if duration not in DURATIONS:
+        raise ValueError("Invalid order duration")
     return {
-        **symbols,
-        "variety": str(value("variety", default="NORMAL")).upper(),
-        "order_type": order_type,
-        "product_type": str(value("producttype", "product_type", "DELIVERY")).upper(),
-        "duration": str(value("duration", default="DAY")).upper(),
-        "transaction_type": side,
+        **symbols, "variety": variety, "order_type": order_type,
+        "product_type": product, "duration": duration, "transaction_type": side,
         "quantity": quantity, "price": price, "trigger_price": trigger,
         "disclosed_quantity": disclosed,
     }
@@ -140,22 +150,65 @@ def free_cash(conn, client_code, exclude_order=None):
     return account["available_balance"] - account["used_funds"] - reserved
 
 
-def required_funds(values):
-    price = values["price"]
-    if values["order_type"] == "MARKET":
-        price = float(get_effective_ltp(
-            values["exchange"], values["symboltoken"], values["tradingsymbol"]
-        ))
-    with connect() as conn:
-        charges = calculate_charges(conn, price, values["quantity"], values["transaction_type"])
-    cost = charges["gross_trade_value"]
-    return round(max(0, charges["total_charges"] + (
-        cost if values["transaction_type"] == "BUY" else -cost
-    )), 2)
+def short_margin_percent():
+    try:
+        return max(0.0, min(100.0, float(os.getenv("SMARTAPI_SHORT_MARGIN_PERCENT", "20"))))
+    except ValueError:
+        return 20.0
+
+
+def validate_instrument(values):
+    if mapping_for(values["exchange"], values["symboltoken"], values["tradingsymbol"]) is None:
+        raise MarketDataError("Failed to get symbol details", "AB1018")
+
+
+def order_price(values):
+    if values["order_type"] == "LIMIT":
+        return values["price"]
+    return float(get_effective_ltp(
+        values["exchange"], values["symboltoken"], values["tradingsymbol"]
+    ))
+
+
+def required_funds(conn, client_code, values, price):
+    charges = calculate_charges(conn, price, values["quantity"], values["transaction_type"])
+    total = charges["total_charges"]
+    if values["transaction_type"] == "BUY":
+        return round(charges["gross_trade_value"] + total, 2)
+
+    if values["product_type"] == "DELIVERY":
+        holding = conn.execute(
+            "SELECT quantity FROM holdings WHERE client_code=? AND exchange=? AND symboltoken=?",
+            (client_code, values["exchange"], values["symboltoken"]),
+        ).fetchone()
+        if holding is None or holding["quantity"] < values["quantity"]:
+            raise ValueError("Insufficient holdings")
+        return round(total, 2)
+
+    position = conn.execute(
+        "SELECT net_qty FROM positions WHERE client_code=? AND exchange=? AND symboltoken=? "
+        "AND product_type=?",
+        (client_code, values["exchange"], values["symboltoken"], values["product_type"]),
+    ).fetchone()
+    long_qty = max(0, position["net_qty"] if position else 0)
+    short_qty = max(0, values["quantity"] - long_qty)
+    margin = price * short_qty * short_margin_percent() / 100
+    return round(total + margin, 2)
+
+
+def used_funds_for_positions(conn, client_code):
+    used = 0.0
+    for row in conn.execute(
+        "SELECT net_qty, avg_price, product_type FROM positions WHERE client_code=? AND net_qty<>0",
+        (client_code,),
+    ):
+        value = abs(row["net_qty"]) * row["avg_price"]
+        used += value if row["net_qty"] > 0 else value * short_margin_percent() / 100
+    return round(used, 2)
 
 
 def insert_order(conn, client_code, values, status, reserved, text=""):
-    order_id = str(time.time_ns())[-16:]
+    order_id = str(uuid.uuid4().int % 10**16).zfill(16)
     unique_id = str(uuid.uuid4())
     now = stamp()
     conn.execute(
@@ -183,7 +236,8 @@ async def place_order(request):
         return failed("Invalid or expired token", 403)
     try:
         values = parse_order(await payload(request))
-        reserved = required_funds(values)
+        validate_instrument(values)
+        price = await asyncio.to_thread(order_price, values)
     except ValueError as exc:
         return error(str(exc))
     except MarketDataError as exc:
@@ -191,6 +245,11 @@ async def place_order(request):
     status = "PENDING" if values["order_type"] == "MARKET" else "OPEN"
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        try:
+            reserved = required_funds(conn, auth["client_code"], values, price)
+        except ValueError as exc:
+            insert_order(conn, auth["client_code"], values, "REJECTED", 0, str(exc))
+            return error(str(exc), "AB1002")
         if reserved > free_cash(conn, auth["client_code"]):
             insert_order(
                 conn, auth["client_code"], values, "REJECTED", 0,
@@ -208,26 +267,39 @@ async def modify_order(request):
     data = await payload(request)
     order_id = str(data.get("orderid", ""))
     with connect() as conn:
-        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT * FROM orders WHERE order_id=? AND client_code=?",
             (order_id, auth["client_code"]),
         ).fetchone()
-        if row is None:
-            return error("Order not found", "AB1010", 404)
-        if row["status"] not in OPEN:
+    if row is None:
+        return error("Order not found", "AB1010", 404)
+    if row["status"] not in OPEN:
+        return error("Only an open order can be modified", "AB1011")
+    try:
+        values = parse_order(data, row)
+        if any(values[key] != row[key] for key in (
+            "exchange", "tradingsymbol", "symboltoken", "transaction_type"
+        )):
+            raise ValueError("Order symbol and transaction side cannot be modified")
+        validate_instrument(values)
+        price = await asyncio.to_thread(order_price, values)
+    except ValueError as exc:
+        return error(str(exc))
+    except MarketDataError as exc:
+        return error(str(exc), exc.errorcode, exc.status_code)
+
+    with connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT * FROM orders WHERE order_id=? AND client_code=?",
+            (order_id, auth["client_code"]),
+        ).fetchone()
+        if current is None or current["status"] not in OPEN:
             return error("Only an open order can be modified", "AB1011")
         try:
-            values = parse_order(data, row)
-            if any(values[key] != row[key] for key in (
-                "exchange", "tradingsymbol", "symboltoken", "transaction_type"
-            )):
-                raise ValueError("Order symbol and transaction side cannot be modified")
-            reserved = required_funds(values)
+            reserved = required_funds(conn, auth["client_code"], values, price)
         except ValueError as exc:
-            return error(str(exc))
-        except MarketDataError as exc:
-            return error(str(exc), exc.errorcode, exc.status_code)
+            return error(str(exc), "AB1002")
         if reserved > free_cash(conn, auth["client_code"], order_id):
             return error("Insufficient funds", "AB1002")
         status = "PENDING" if values["order_type"] == "MARKET" else "OPEN"
@@ -379,11 +451,22 @@ def fill_order(order_id, ltp):
                 return
         fill_price = ltp if row["order_type"] == "MARKET" else row["price"]
         charges = calculate_charges(conn, fill_price, row["quantity"], row["transaction_type"])
-        cost = charges["gross_trade_value"]
-        funds_delta = cost if row["transaction_type"] == "BUY" else -cost
-        if round(funds_delta + charges["total_charges"], 2) > round(
-            free_cash(conn, row["client_code"], order_id), 2
-        ):
+        values = {
+            "exchange": row["exchange"], "tradingsymbol": row["tradingsymbol"],
+            "symboltoken": row["symboltoken"], "product_type": row["product_type"],
+            "transaction_type": row["transaction_type"], "quantity": row["quantity"],
+        }
+        try:
+            needed = required_funds(conn, row["client_code"], values, fill_price)
+        except ValueError as exc:
+            conn.execute(
+                "UPDATE orders SET status='REJECTED', reserved_funds=0, text=?, "
+                "updated_at=? WHERE order_id=?",
+                (str(exc), stamp(), order_id),
+            )
+            add_event(conn, order_id, "REJECTED", str(exc))
+            return
+        if needed > round(free_cash(conn, row["client_code"], order_id), 2):
             conn.execute(
                 "UPDATE orders SET status='REJECTED', reserved_funds=0, text=?, "
                 "updated_at=? WHERE order_id=?",
@@ -407,13 +490,16 @@ def fill_order(order_id, ltp):
                 row["product_type"], row["quantity"], fill_price, now,
             ),
         )
-        conn.execute(
-            "UPDATE accounts SET used_funds=ROUND(used_funds + ?, 2), "
-            "available_balance=ROUND(available_balance - ?, 2), "
-            "total_charges=ROUND(total_charges + ?, 2) WHERE client_code=?",
-            (funds_delta, charges["total_charges"], charges["total_charges"], row["client_code"]),
-        )
         gross_pnl = update_position(conn, row, fill_price, charges["total_charges"])
+        used_funds = used_funds_for_positions(conn, row["client_code"])
+        conn.execute(
+            "UPDATE accounts SET used_funds=?, "
+            "available_balance=ROUND(available_balance + ? - ?, 2), "
+            "realized_pnl=ROUND(realized_pnl + ?, 2), "
+            "total_charges=ROUND(total_charges + ?, 2) WHERE client_code=?",
+            (used_funds, gross_pnl, charges["total_charges"], gross_pnl,
+             charges["total_charges"], row["client_code"]),
+        )
         charges.update(pnl_values(gross_pnl, 0, charges["total_charges"]))
         conn.execute(
             "UPDATE trades SET " + ", ".join(f"{name}=?" for name in TRADE_FIELDS)
@@ -452,7 +538,7 @@ async def order_checker():
         try:
             await asyncio.to_thread(check_open_orders)
         except Exception:
-            pass
+            LOGGER.exception("order checker failed")
         await asyncio.sleep(setting("SMARTAPI_ORDER_CHECK_INTERVAL_MS", 100) / 1000)
 
 

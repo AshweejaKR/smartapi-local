@@ -43,6 +43,7 @@ class SDKServer:
 
     def start(self):
         listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", self.port))
         self.port = listener.getsockname()[1]
         self.root = f"http://127.0.0.1:{self.port}"
@@ -76,16 +77,25 @@ class SDKServer:
         assert response.status_code == 303
 
     def wait_order(self, order_id, status="FILLED", timeout=4):
+        expected = {
+            "PENDING": "open pending", "OPEN": "open", "FILLED": "complete",
+            "REJECTED": "rejected", "CANCELLED": "cancelled",
+        }.get(status.upper(), status.lower())
         deadline = time.monotonic() + timeout
         row = None
         while time.monotonic() < deadline:
             result = self.sdk.orderBook()
             assert result["status"], result
             row = next((r for r in result["data"] if r["orderid"] == order_id), None)
-            if row and row["status"] == status:
+            if row and str(row["status"]).lower() == expected:
                 return row
             time.sleep(.05)
         pytest.fail(f"Order {order_id} did not become {status}: {row}")
+
+
+@pytest.fixture(autouse=True)
+def disable_startup_banner(monkeypatch):
+    monkeypatch.setenv("SMARTAPI_STARTUP_BANNER", "0")
 
 
 @pytest.fixture

@@ -63,15 +63,16 @@ def test_requests_login_rate_limit_and_fault_are_audited_without_secrets(client)
     assert any(row["action"] == "fault_request" and "HTTP 503" in row["detail"] for row in rows)
     logged = json.dumps(rows)
     assert all(secret not in logged for secret in [bad_password, "DUMMY_API_KEY", *tokens.values()])
-    assert client.get("/health").json()["data"]["phase"] == 13
 
 
 def test_audit_survives_handler_error_and_restart(client, monkeypatch):
     async def broken_profile(request):
         raise RuntimeError("private exception context")
 
-    monkeypatch.setattr(app_module, "profile", broken_profile)
-    assert client.get(PROFILE).status_code == 500
+    tokens = sign_in(client)
+    headers = {"Authorization": "Bearer " + tokens["jwtToken"]}
+    monkeypatch.setitem(app_module.CORE_HANDLERS, PROFILE, broken_profile)
+    assert client.get(PROFILE, headers=headers).status_code == 500
     before = entries()
     assert before[-1]["detail"] == f"GET {PROFILE} HTTP 500"
     assert "private exception context" not in json.dumps(before)

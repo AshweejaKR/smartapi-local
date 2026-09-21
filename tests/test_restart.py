@@ -67,10 +67,10 @@ def test_actual_process_restart_preserves_trading_and_configuration(tmp_path, mo
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             book = sdk.orderBook()["data"]
-            if book and book[0]["status"] == "FILLED":
+            if book and book[0]["status"] == "complete":
                 break
             time.sleep(.05)
-        assert book[0]["status"] == "FILLED"
+        assert book[0]["status"] == "complete"
         waiting = sdk.placeOrder({**params, "ordertype": "LIMIT", "price": 90, "quantity": 1})
         before = {name: getattr(sdk, name)()["data"] for name in
                   ("orderBook", "tradeBook", "position", "holding", "allholding", "rmsLimit")}
@@ -92,10 +92,10 @@ def test_actual_process_restart_preserves_trading_and_configuration(tmp_path, mo
         while time.monotonic() < deadline:
             book = restored.orderBook()["data"]
             row = next(row for row in book if row["orderid"] == waiting)
-            if row["status"] == "FILLED":
+            if row["status"] == "complete":
                 break
             time.sleep(.05)
-        assert row["status"] == "FILLED" and row["averageprice"] == 90
+        assert row["status"] == "complete" and row["averageprice"] == 90
         assert len(restored.tradeBook()["data"]) == 2
         assert restored.holding()["data"][0]["quantity"] == 3
         assert restored.rmsLimit()["data"]["availablecash"] == 710

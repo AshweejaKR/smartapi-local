@@ -6,16 +6,15 @@
 
   <form method="get" action="/admin/market">
     <label>Symbol
-      <select name="symboltoken" onchange="this.form.submit()">
+      <select name="symbol" onchange="this.form.submit()">
         {% for symbol in symbols %}
-        <option value="{{ symbol.symboltoken }}" data-exchange="{{ symbol.exchange }}"
+        <option value="{{ symbol.exchange }}:{{ symbol.symboltoken }}"
           {% if selected and symbol.exchange == selected.exchange and symbol.symboltoken == selected.symboltoken %}selected{% endif %}>
           {{ symbol.exchange }} / {{ symbol.tradingsymbol }} ({{ symbol.symboltoken }})
         </option>
         {% endfor %}
       </select>
     </label>
-    {% if selected %}<input type="hidden" name="exchange" value="{{ selected.exchange }}">{% endif %}
     <noscript><button>Load symbol</button></noscript>
   </form>
 
