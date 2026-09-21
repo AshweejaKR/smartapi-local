@@ -78,7 +78,7 @@ The default is safe: Yahoo market data with local orders and local funds.
 |---|---|---|---|
 | `market_data_source` | Real Angel LTP, quote, candles and OI | Yahoo market data; Admin HIJACK still works | LTP always `100.05`; 25 sample candles |
 | `order_data` | Real order placement, order/trade books, positions, holdings and conversion | Not allowed | Local SQLite order simulator |
-| `account_data` | Real Angel RMS/funds | Not allowed | Local SQLite RMS/funds |
+| `account_data` | Real Angel RMS/funds and batch margin | Not allowed | Local SQLite RMS/funds and batch margin |
 
 `None`, `null`, empty value and `dummy` all select dummy market data. Restart the server after changing this file.
 
@@ -182,4 +182,3 @@ Expected current result: `159 passed, 1 skipped`. The skipped Yahoo smoke test r
 
 - `ROUTES.md`: SDK route inventory.
 - `SMARTAPI_LOCAL_SERVER_PLAN.md`: project status and real-vs-local parity plan.
-

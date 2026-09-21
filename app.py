@@ -165,7 +165,10 @@ ORDER_PROXY_PATHS = {
     "/rest/secure/angelbroking/order/v1/convertPosition",
     "/rest/secure/angelbroking/order/v1/details/{order_id}",
 }
-ACCOUNT_PROXY_PATHS = {"/rest/secure/angelbroking/user/v1/getRMS"}
+ACCOUNT_PROXY_PATHS = {
+    "/rest/secure/angelbroking/user/v1/getRMS",
+    "/rest/secure/angelbroking/margin/v1/batch",
+}
 
 
 def proxy_selected(path):

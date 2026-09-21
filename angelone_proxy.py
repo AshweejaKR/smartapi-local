@@ -29,6 +29,7 @@ ROUTES = {
     "/rest/secure/angelbroking/portfolio/v1/getAllHolding": ("api.allholding", "GET"),
     "/rest/secure/angelbroking/order/v1/convertPosition": ("api.convert.position", "POST"),
     "/rest/secure/angelbroking/user/v1/getRMS": ("api.rms.limit", "GET"),
+    "/rest/secure/angelbroking/margin/v1/batch": ("api.margin.api", "POST"),
 }
 
 

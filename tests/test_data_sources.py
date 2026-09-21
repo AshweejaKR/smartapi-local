@@ -72,6 +72,9 @@ def test_selected_angel_routes_forward_without_local_state(tmp_path, monkeypatch
             ("/rest/secure/angelbroking/order/v1/getPosition", None),
             ("/rest/secure/angelbroking/portfolio/v1/getHolding", None),
             ("/rest/secure/angelbroking/user/v1/getRMS", None),
+            ("/rest/secure/angelbroking/margin/v1/batch", {"positions": [{
+                "exchange": "NSE", "qty": 1, "price": 269.09, "productType": "DELIVERY",
+            }]}),
         ]
         for path, data in paths:
             response = client.post(path, headers=headers, json=data) if data is not None else client.get(path, headers=headers)
