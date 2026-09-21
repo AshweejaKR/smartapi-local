@@ -8,11 +8,11 @@ import sqlite3
 import time
 
 from admin import init_admin, record_audit, router as admin_router
-from angelone_proxy import AngelOneError, PROXY
+from angelone_proxy import AngelOneError, AngelOneRemoteError, PROXY
 from auth import active_session, failed, generate_tokens, init_auth, login, logout, payload, profile
 from charges import init_charges
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fault import active_fault, fault_response, init_faults, slow_delay_seconds
 from market import candle_data, init_market, ltp_data, market_data
 from orders import (
@@ -184,9 +184,15 @@ async def angel_response(request, path):
         result = await asyncio.to_thread(
             PROXY.forward, path, data, request.path_params.get("order_id"),
         )
-        if not isinstance(result, dict):
-            raise AngelOneError("Angel One returned an invalid response")
-        return JSONResponse(content=result)
+        return Response(
+            content=result.content, status_code=result.status_code,
+            headers={"content-type": result.content_type},
+        )
+    except AngelOneRemoteError as exc:
+        return Response(
+            content=exc.reply.content, status_code=exc.reply.status_code,
+            headers={"content-type": exc.reply.content_type},
+        )
     except Exception:
         return error("Angel One request is unavailable", "AB2001", 503)
 

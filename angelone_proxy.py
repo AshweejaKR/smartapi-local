@@ -1,10 +1,14 @@
 """Small authenticated proxy for selected Angel One SmartAPI routes."""
 import base64
+from dataclasses import dataclass
 import hashlib
 import hmac
+import json
 import struct
 import time
+from urllib.parse import urljoin
 
+import requests
 from SmartApi import SmartConnect
 
 from server_config import SETTINGS
@@ -30,6 +34,25 @@ ROUTES = {
 
 class AngelOneError(RuntimeError):
     pass
+
+
+@dataclass
+class AngelOneReply:
+    status_code: int
+    content: bytes
+    content_type: str = "application/json"
+
+    def json(self):
+        try:
+            return json.loads(self.content)
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+
+
+class AngelOneRemoteError(AngelOneError):
+    def __init__(self, reply):
+        super().__init__("Angel One request failed")
+        self.reply = reply
 
 
 def _env_file(path):
@@ -74,9 +97,16 @@ class AngelOneProxy:
         password = _value(values, "ANGELONE_PASSWORD", "PASSWORD", "MPIN")
         totp_secret = _value(values, "ANGELONE_TOTP_SECRET", "TOTP_SECRET", "TOTP")
         client = SmartConnect(api_key=api_key)
-        response = client.generateSession(client_code, password, _totp(totp_secret))
+        reply = self._request(client, "api.login", "POST", {
+            "clientcode": client_code, "password": password, "totp": _totp(totp_secret),
+        })
+        response = reply.json()
         if not isinstance(response, dict) or not response.get("status"):
-            raise AngelOneError("Angel One login failed")
+            raise AngelOneRemoteError(reply)
+        tokens = response.get("data") or {}
+        client.setAccessToken(tokens.get("jwtToken"))
+        client.setRefreshToken(tokens.get("refreshToken"))
+        client.setFeedToken(tokens.get("feedToken"))
         self.client, self.credentials_path = client, path
         return client
 
@@ -85,15 +115,38 @@ class AngelOneProxy:
             return self._login()
         return self.client
 
+    def _request(self, client, route, method, data=None):
+        params = dict(data or {})
+        route_path = client._routes[route].format(**params)
+        if route == "api.individual.order.details":
+            route_path += str(params.pop("order_id"))
+        url = urljoin(client.root, route_path)
+        headers = client.requestHeaders()
+        if client.access_token:
+            headers["Authorization"] = f"Bearer {client.access_token}"
+        response = requests.request(
+            method, url,
+            data=json.dumps(params) if method in {"POST", "PUT"} else None,
+            params=json.dumps(params) if method in {"GET", "DELETE"} else None,
+            headers=headers, verify=not client.disable_ssl, allow_redirects=True,
+            timeout=client.timeout, proxies=client.proxies,
+        )
+        return AngelOneReply(
+            response.status_code, response.content,
+            response.headers.get("content-type", "application/json"),
+        )
+
     def forward(self, path, data=None, order_id=None):
         client = self._client()
         if order_id is not None:
-            return client.individual_order_details(order_id)
+            return self._request(
+                client, "api.individual.order.details", "GET", {"order_id": order_id},
+            )
         try:
             route, method = ROUTES[path]
         except KeyError as exc:
             raise AngelOneError("Unsupported Angel One proxy route") from exc
-        return client._postRequest(route, data or {}) if method == "POST" else client._getRequest(route)
+        return self._request(client, route, method, data)
 
 
 PROXY = AngelOneProxy()

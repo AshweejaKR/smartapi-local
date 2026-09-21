@@ -59,7 +59,9 @@ def test_selected_angel_routes_forward_without_local_state(tmp_path, monkeypatch
 
     def forward(path, data=None, order_id=None):
         calls.append((path, data, order_id))
-        return {"status": True, "message": "SUCCESS", "errorcode": "", "data": {"remote": path}}
+        return angelone_proxy.AngelOneReply(
+            200, ('{"status":true,"message":"SUCCESS","errorcode":"","data":{"remote":"' + path + '"}}').encode(),
+        )
 
     monkeypatch.setattr(angelone_proxy.PROXY, "forward", forward)
     with TestClient(app_module.app) as client:
@@ -79,7 +81,7 @@ def test_selected_angel_routes_forward_without_local_state(tmp_path, monkeypatch
         assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
 
 
-def test_proxy_uses_sdk_route_and_original_payload(monkeypatch, tmp_path):
+def test_proxy_preserves_broker_status_and_payload(monkeypatch, tmp_path):
     config = config_file(tmp_path, market="angelone")
     monkeypatch.setenv("SMARTAPI_CONFIG_FILE", str(config))
     monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "proxy.db")
@@ -87,13 +89,31 @@ def test_proxy_uses_sdk_route_and_original_payload(monkeypatch, tmp_path):
     calls = []
 
     class Client:
-        def _postRequest(self, route, data):
-            calls.append((route, data))
-            return {"status": True}
+        root = "https://broker.example"
+        access_token = "token"
+        disable_ssl = False
+        timeout = 7
+        proxies = {}
+        _routes = {"api.ltp.data": "/ltp"}
+
+        def requestHeaders(self):
+            return {"X-PrivateKey": "key"}
+
+    class BrokerResponse:
+        status_code = 429
+        content = b'{"status":false,"message":"Rate limit","errorcode":"AB429","data":null}'
+        headers = {"content-type": "application/json"}
+
+    def request(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return BrokerResponse()
 
     proxy = angelone_proxy.AngelOneProxy()
     proxy.client = Client()
     proxy.credentials_path = angelone_proxy.SETTINGS["credentials_file"]
     payload = {"exchange": "NSE", "tradingsymbol": "SBIN-EQ", "symboltoken": "3045"}
-    assert proxy.forward("/rest/secure/angelbroking/order/v1/getLtpData", payload)["status"]
-    assert calls == [("api.ltp.data", payload)]
+    monkeypatch.setattr(angelone_proxy.requests, "request", request)
+    reply = proxy.forward("/rest/secure/angelbroking/order/v1/getLtpData", payload)
+    assert reply.status_code == 429 and reply.content == BrokerResponse.content
+    assert calls[0][0:2] == ("POST", "https://broker.example/ltp")
+    assert calls[0][2]["data"] == '{"exchange": "NSE", "tradingsymbol": "SBIN-EQ", "symboltoken": "3045"}'

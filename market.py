@@ -381,10 +381,11 @@ class MarketDataService:
         from angelone_proxy import PROXY, AngelOneError
 
         try:
-            result = PROXY.forward(
+            reply = PROXY.forward(
                 "/rest/secure/angelbroking/order/v1/getLtpData",
                 {"exchange": exchange, "tradingsymbol": tradingsymbol, "symboltoken": symboltoken},
             )
+            result = reply.json()
             values = result.get("data") if isinstance(result, dict) else None
             if not result or not result.get("status") or not isinstance(values, dict):
                 raise AngelOneError("Angel One market request failed")
@@ -440,12 +441,13 @@ class MarketDataService:
             from angelone_proxy import PROXY, AngelOneError
 
             try:
-                result = PROXY.forward(
+                reply = PROXY.forward(
                     "/rest/secure/angelbroking/historical/v1/getCandleData",
                     {"exchange": exchange, "symboltoken": symboltoken, "interval": interval,
                      "fromdate": start.strftime("%Y-%m-%d %H:%M"),
                      "todate": end.strftime("%Y-%m-%d %H:%M")},
                 )
+                result = reply.json()
                 if not isinstance(result, dict) or not result.get("status"):
                     raise AngelOneError("Angel One candle request failed")
                 return result.get("data") or []
