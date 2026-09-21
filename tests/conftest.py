@@ -43,6 +43,7 @@ class SDKServer:
 
     def start(self):
         listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", self.port))
         self.port = listener.getsockname()[1]
         self.root = f"http://127.0.0.1:{self.port}"
