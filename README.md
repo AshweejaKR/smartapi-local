@@ -31,6 +31,23 @@ Admin UI: `http://127.0.0.1:8000/admin`
 - Jinja admin UI and LTP control panel
 - real-vs-local parity runner for Phase 14
 
+## Data-source config
+
+`default.yaml` controls the server source. Set `SMARTAPI_CONFIG_FILE` to use a different file.
+
+```yaml
+market_data_source: yahoo # angelone/yahoo/None
+order_data: None          # angelone/None
+account_data: None        # angelone/None
+credentials_file: "angelone_keys.env"
+```
+
+- `market_data_source: angelone` forwards LTP, quote and candle responses from Angel One.
+- `market_data_source: yahoo` keeps Yahoo Finance data. `None` returns fixed `100.05` LTP and 25 sample candles.
+- `order_data: angelone` forwards orders, order/trade books, positions and holdings to Angel One. `account_data: angelone` forwards RMS/funds.
+
+The credentials file stays outside Git. It needs API key, client code, password and TOTP secret using either `ANGELONE_*` names or the matching short names (`API_KEY`, `CLIENT_CODE`, `PASSWORD`, `TOTP_SECRET`).
+
 ## Default local user
 
 | Field | Value |

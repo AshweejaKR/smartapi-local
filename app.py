@@ -8,7 +8,8 @@ import sqlite3
 import time
 
 from admin import init_admin, record_audit, router as admin_router
-from auth import generate_tokens, init_auth, login, logout, profile
+from angelone_proxy import AngelOneError, PROXY
+from auth import active_session, failed, generate_tokens, init_auth, login, logout, payload, profile
 from charges import init_charges
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -21,6 +22,7 @@ import phase11
 from phase11 import init_phase11
 from portfolio import holdings, init_portfolio, order_book, positions, rms_limit, trade_book
 from rate_limit import client_code_for, init_rate_limits, limiter
+from server_config import init_config, is_angel
 
 
 BASE_DIR = Path(__file__).parent
@@ -29,6 +31,7 @@ DB_PATH = BASE_DIR / "smartapi_local.db"
 
 def init_db():
     """Create the local database and current phase tables."""
+    init_config(BASE_DIR)
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS server_meta "
@@ -144,9 +147,54 @@ CORE_HANDLERS = {
     "/rest/secure/angelbroking/order/v1/getPosition": positions,
 }
 
+MARKET_PROXY_PATHS = {
+    "/rest/secure/angelbroking/order/v1/getLtpData",
+    "/rest/secure/angelbroking/market/v1/quote",
+    "/rest/secure/angelbroking/historical/v1/getCandleData",
+    "/rest/secure/angelbroking/historical/v1/getOIData",
+}
+ORDER_PROXY_PATHS = {
+    "/rest/secure/angelbroking/order/v1/placeOrder",
+    "/rest/secure/angelbroking/order/v1/modifyOrder",
+    "/rest/secure/angelbroking/order/v1/cancelOrder",
+    "/rest/secure/angelbroking/order/v1/getOrderBook",
+    "/rest/secure/angelbroking/order/v1/getTradeBook",
+    "/rest/secure/angelbroking/order/v1/getPosition",
+    "/rest/secure/angelbroking/portfolio/v1/getHolding",
+    "/rest/secure/angelbroking/portfolio/v1/getAllHolding",
+    "/rest/secure/angelbroking/order/v1/convertPosition",
+    "/rest/secure/angelbroking/order/v1/details/{order_id}",
+}
+ACCOUNT_PROXY_PATHS = {"/rest/secure/angelbroking/user/v1/getRMS"}
+
+
+def proxy_selected(path):
+    if path in MARKET_PROXY_PATHS:
+        return is_angel("market_data_source")
+    if path in ORDER_PROXY_PATHS:
+        return is_angel("order_data")
+    return path in ACCOUNT_PROXY_PATHS and is_angel("account_data")
+
+
+async def angel_response(request, path):
+    if active_session(request) is None:
+        return failed("Invalid or expired token", 403)
+    try:
+        data = await payload(request)
+        result = await asyncio.to_thread(
+            PROXY.forward, path, data, request.path_params.get("order_id"),
+        )
+        if not isinstance(result, dict):
+            raise AngelOneError("Angel One returned an invalid response")
+        return JSONResponse(content=result)
+    except Exception:
+        return error("Angel One request is unavailable", "AB2001", 503)
+
 
 async def dispatch_rest(request: Request):
     path = request.scope["route"].path
+    if proxy_selected(path):
+        return await angel_response(request, path)
     if handler := CORE_HANDLERS.get(path):
         return await handler(request)
     if path in {

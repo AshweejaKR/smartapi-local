@@ -1,0 +1,4 @@
+market_data_source: yahoo # angelone/yahoo/None
+order_data: None # angelone/None
+account_data: None # angelone/None
+credentials_file: "angelone_keys.env"

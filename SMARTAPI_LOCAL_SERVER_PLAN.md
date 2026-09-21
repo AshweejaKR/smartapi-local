@@ -16,6 +16,7 @@ REST only. WebSocket support is optional later.
 - SQLite persistence
 - Jinja2 Admin UI
 - Yahoo Finance market data with per-symbol HIJACK overrides
+- YAML-selectable Yahoo, dummy or Angel One data forwarding
 - one process / one port
 - SDK route inventory: `ROUTES.md`
 
@@ -106,3 +107,7 @@ Phase 14 becomes `DONE` only after the real-vs-local run completes successfully,
 ## Change rule
 
 Keep changes small, preserve SmartAPI behavior, update tests with code changes, and do not mark a phase DONE before acceptance passes.
+
+## Source selection
+
+`default.yaml` selects market, order and account sources independently. Angel One mode logs in with the external credentials file and returns its response unchanged for selected routes. It never stores real orders, positions, holdings or funds in local SQLite. `None` market mode returns LTP `100.05` and 25 sample candles.
