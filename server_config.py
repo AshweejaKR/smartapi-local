@@ -54,3 +54,10 @@ def source(name):
 
 def is_angel(name):
     return source(name) == "angelone"
+
+
+def transparent_angel_proxy_enabled():
+    """True only when every data source is the real broker."""
+    return all(is_angel(name) for name in (
+        "market_data_source", "order_data", "account_data",
+    ))

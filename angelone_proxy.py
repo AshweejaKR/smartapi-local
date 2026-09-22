@@ -14,6 +14,13 @@ from SmartApi import SmartConnect
 from server_config import SETTINGS
 
 
+BROKER_ROOT = "https://apiconnect.angelone.in"
+HOP_BY_HOP_HEADERS = {
+    "connection", "content-length", "host", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade",
+}
+
+
 ROUTES = {
     "/rest/secure/angelbroking/order/v1/getLtpData": ("api.ltp.data", "POST"),
     "/rest/secure/angelbroking/market/v1/quote": ("api.market.data", "POST"),
@@ -54,6 +61,25 @@ class AngelOneRemoteError(AngelOneError):
     def __init__(self, reply):
         super().__init__("Angel One request failed")
         self.reply = reply
+
+
+def forward_transparent(method, path, query, headers, body):
+    """Forward one client request without changing its broker payload."""
+    url = f"{BROKER_ROOT}{path}"
+    if query:
+        url = f"{url}?{query}"
+    request_headers = {
+        key: value for key, value in headers.items()
+        if key.lower() not in HOP_BY_HOP_HEADERS
+    }
+    response = requests.request(
+        method, url, data=body, headers=request_headers,
+        allow_redirects=False, timeout=30,
+    )
+    return AngelOneReply(
+        response.status_code, response.content,
+        response.headers.get("content-type", "application/json"),
+    )
 
 
 def _env_file(path):

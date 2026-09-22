@@ -110,4 +110,4 @@ Keep changes small, preserve SmartAPI behavior, update tests with code changes, 
 
 ## Source selection
 
-`default.yaml` selects market, order and account sources independently. Angel One mode logs in with the external credentials file and returns its response unchanged for selected routes. It never stores real orders, positions, holdings or funds in local SQLite. `None` market mode returns LTP `100.05` and 25 sample candles.
+`default.yaml` selects market, order and account sources independently. When all three are `angelone`, the server is a transparent proxy: it forwards client credentials, request body, headers and query to Angel One and returns the broker status/body unchanged. Partial Angel One mode logs in with the external credentials file for selected routes. It never stores real orders, positions, holdings or funds in local SQLite. `None` market mode returns LTP `100.05` and 25 sample candles.

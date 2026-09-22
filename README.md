@@ -109,7 +109,7 @@ account_data: None
 credentials_file: "angelone_keys.env"
 ```
 
-Example: real broker for market data, orders and funds:
+Example: full transparent Angel One proxy:
 
 ```yaml
 market_data_source: angelone
@@ -129,7 +129,9 @@ ANGELONE_TOTP_SECRET=your_totp_secret
 
 Short names also work: `API_KEY`, `CLIENT_CODE`, `PASSWORD`, `TOTP_SECRET`.
 
-In Angel One mode the server logs in with these credentials, keeps the real session inside the server, and forwards the selected client request to Angel One. Broker JSON errors and HTTP status codes return unchanged to the client. If the broker cannot be reached and there is no broker response, the server returns local HTTP `503`.
+When all three source values are `angelone`, the server is a transparent Angel One proxy. Give the SDK the real API key, client code, password and TOTP; the server forwards the exact request body, query and authentication headers to Angel One. Its HTTP status and JSON body, including login and broker errors, return unchanged. The credentials file is not used in this full-proxy mode.
+
+When only some sources are `angelone`, the server uses the credentials file for those selected routes. If Angel One cannot be reached and no broker response exists, the server returns local HTTP `503`.
 
 > `order_data: angelone` places real orders. Use only after checking quantity, symbol and funds.
 

@@ -8,7 +8,8 @@ import sqlite3
 import time
 
 from admin import init_admin, record_audit, router as admin_router
-from angelone_proxy import AngelOneError, AngelOneRemoteError, PROXY
+import angelone_proxy
+from angelone_proxy import AngelOneRemoteError, PROXY
 from auth import active_session, failed, generate_tokens, init_auth, login, logout, payload, profile
 from charges import init_charges
 from fastapi import FastAPI, Request
@@ -22,7 +23,7 @@ import phase11
 from phase11 import init_phase11
 from portfolio import holdings, init_portfolio, order_book, positions, rms_limit, trade_book
 from rate_limit import client_code_for, init_rate_limits, limiter
-from server_config import init_config, is_angel
+from server_config import init_config, is_angel, transparent_angel_proxy_enabled
 
 
 BASE_DIR = Path(__file__).parent
@@ -200,7 +201,28 @@ async def angel_response(request, path):
         return error("Angel One request is unavailable", "AB2001", 503)
 
 
+async def transparent_angel_response(request):
+    """Return the real broker response for an untouched client request."""
+    try:
+        result = await asyncio.to_thread(
+            angelone_proxy.forward_transparent,
+            request.method,
+            request.url.path,
+            request.scope["query_string"].decode("latin-1"),
+            dict(request.headers),
+            await request.body(),
+        )
+        return Response(
+            content=result.content, status_code=result.status_code,
+            headers={"content-type": result.content_type},
+        )
+    except Exception:
+        return error("Angel One request is unavailable", "AB2001", 503)
+
+
 async def dispatch_rest(request: Request):
+    if transparent_angel_proxy_enabled():
+        return await transparent_angel_response(request)
     path = request.scope["route"].path
     if proxy_selected(path):
         return await angel_response(request, path)
@@ -214,6 +236,12 @@ async def dispatch_rest(request: Request):
     if path == "/rest/secure/angelbroking/order/v1/details/{order_id}":
         return await phase11.individual_order_details(request)
     return await phase11.HANDLERS[path](request)
+
+
+async def dispatch_unknown_rest(request: Request):
+    if transparent_angel_proxy_enabled():
+        return await transparent_angel_response(request)
+    return error("Endpoint is not supported", "AB1000", 404)
 
 
 @asynccontextmanager
@@ -234,7 +262,8 @@ app.include_router(admin_router)
 
 @app.middleware("http")
 async def smartapi_faults(request: Request, call_next):
-    if request.url.path.startswith(("/rest/", "/gtt-service/rest/")):
+    if (not transparent_angel_proxy_enabled()
+            and request.url.path.startswith(("/rest/", "/gtt-service/rest/"))):
         fault = active_fault()
         if fault:
             request.state.fault_mode = fault["mode"]
@@ -247,7 +276,8 @@ async def smartapi_faults(request: Request, call_next):
 
 @app.middleware("http")
 async def smartapi_rate_limit(request: Request, call_next):
-    if request.url.path.startswith(("/rest/", "/gtt-service/rest/")):
+    if (not transparent_angel_proxy_enabled()
+            and request.url.path.startswith(("/rest/", "/gtt-service/rest/"))):
         failure = limiter.check(request.url.path, request.state.audit_client_code)
         if failure:
             request.state.rate_limited = True
@@ -286,6 +316,12 @@ async def health():
 
 for method, path, name in SDK_ROUTES:
     app.add_api_route(path, dispatch_rest, methods=[method], name=name)
+
+
+app.add_api_route("/rest/{path:path}", dispatch_unknown_rest,
+                  methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+app.add_api_route("/gtt-service/{path:path}", dispatch_unknown_rest,
+                  methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 
 
 if __name__ == "__main__":

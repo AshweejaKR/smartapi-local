@@ -53,7 +53,7 @@ def test_dummy_source_returns_fixed_price_and_25_candles(tmp_path, monkeypatch):
 def test_selected_angel_routes_forward_without_local_state(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "angel.db")
     monkeypatch.setenv("SMARTAPI_CONFIG_FILE", str(config_file(
-        tmp_path, market="angelone", order="angelone", account="angelone",
+        tmp_path, market="angelone", order="angelone", account=None,
     )))
     calls = []
 
@@ -71,10 +71,6 @@ def test_selected_angel_routes_forward_without_local_state(tmp_path, monkeypatch
             ("/rest/secure/angelbroking/order/v1/placeOrder", {"exchange": "NSE", "tradingsymbol": "SBIN-EQ", "symboltoken": "3045", "quantity": "1"}),
             ("/rest/secure/angelbroking/order/v1/getPosition", None),
             ("/rest/secure/angelbroking/portfolio/v1/getHolding", None),
-            ("/rest/secure/angelbroking/user/v1/getRMS", None),
-            ("/rest/secure/angelbroking/margin/v1/batch", {"positions": [{
-                "exchange": "NSE", "qty": 1, "price": 269.09, "productType": "DELIVERY",
-            }]}),
         ]
         for path, data in paths:
             response = client.post(path, headers=headers, json=data) if data is not None else client.get(path, headers=headers)
@@ -82,6 +78,38 @@ def test_selected_angel_routes_forward_without_local_state(tmp_path, monkeypatch
     assert [call[0] for call in calls] == [path for path, _ in paths]
     with sqlite3.connect(tmp_path / "angel.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
+
+
+def test_full_angel_mode_transparently_forwards_client_request(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "transparent.db")
+    monkeypatch.setenv("SMARTAPI_CONFIG_FILE", str(config_file(
+        tmp_path, market="angelone", order="angelone", account="angelone",
+    )))
+    calls = []
+    broker_error = b'{"status":false,"message":"Invalid client code","errorcode":"AG8001","data":null}'
+
+    def forward(method, path, query, headers, body):
+        calls.append((method, path, query, headers, body))
+        return angelone_proxy.AngelOneReply(401, broker_error)
+
+    monkeypatch.setattr(angelone_proxy, "forward_transparent", forward)
+    request_body = b'{"clientcode":"REAL001","password":"wrong","totp":"123456"}'
+    with TestClient(app_module.app) as client:
+        response = client.post(
+            "/rest/auth/angelbroking/user/v1/loginByPassword?source=client",
+            headers={"X-PrivateKey": "real-api-key", "Content-Type": "application/json"},
+            content=request_body,
+        )
+        unknown = client.get(
+            "/rest/secure/angelbroking/example/v1/newEndpoint?x=1",
+            headers={"Authorization": "Bearer real-token"},
+        )
+    assert response.status_code == 401 and response.content == broker_error
+    assert calls[0][0:3] == ("POST", "/rest/auth/angelbroking/user/v1/loginByPassword", "source=client")
+    assert calls[0][3]["x-privatekey"] == "real-api-key"
+    assert calls[0][4] == request_body
+    assert unknown.status_code == 401 and unknown.content == broker_error
+    assert calls[1][0:3] == ("GET", "/rest/secure/angelbroking/example/v1/newEndpoint", "x=1")
 
 
 def test_proxy_preserves_broker_status_and_payload(monkeypatch, tmp_path):
