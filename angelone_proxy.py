@@ -120,7 +120,7 @@ class AngelOneProxy:
         path = SETTINGS["credentials_file"]
         values = _env_file(path)
         api_key = _value(values, "ANGELONE_API_KEY", "API_KEY")
-        client_code = _value(values, "ANGELONE_CLIENT_CODE", "CLIENT_CODE", "CLIENTCODE")
+        client_code = _value(values, "ANGELONE_CLIENT_CODE", "CLIENT_CODE", "CLIENT_ID", "CLIENTCODE")
         password = _value(values, "ANGELONE_PASSWORD", "PASSWORD", "MPIN")
         totp_secret = _value(values, "ANGELONE_TOTP_SECRET", "TOTP_SECRET", "TOTP")
         client = SmartConnect(api_key=api_key)
