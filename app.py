@@ -8,10 +8,12 @@ import sqlite3
 import time
 
 from admin import init_admin, record_audit, router as admin_router
-from auth import generate_tokens, init_auth, login, logout, profile
+import angelone_proxy
+from angelone_proxy import AngelOneRemoteError, PROXY
+from auth import active_session, failed, generate_tokens, init_auth, login, logout, payload, profile
 from charges import init_charges
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fault import active_fault, fault_response, init_faults, slow_delay_seconds
 from market import candle_data, init_market, ltp_data, market_data
 from orders import (
@@ -21,6 +23,7 @@ import phase11
 from phase11 import init_phase11
 from portfolio import holdings, init_portfolio, order_book, positions, rms_limit, trade_book
 from rate_limit import client_code_for, init_rate_limits, limiter
+from server_config import init_config, is_angel, transparent_angel_proxy_enabled
 
 
 BASE_DIR = Path(__file__).parent
@@ -29,6 +32,7 @@ DB_PATH = BASE_DIR / "smartapi_local.db"
 
 def init_db():
     """Create the local database and current phase tables."""
+    init_config(BASE_DIR)
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS server_meta "
@@ -144,9 +148,84 @@ CORE_HANDLERS = {
     "/rest/secure/angelbroking/order/v1/getPosition": positions,
 }
 
+MARKET_PROXY_PATHS = {
+    "/rest/secure/angelbroking/order/v1/getLtpData",
+    "/rest/secure/angelbroking/market/v1/quote",
+    "/rest/secure/angelbroking/historical/v1/getCandleData",
+    "/rest/secure/angelbroking/historical/v1/getOIData",
+}
+ORDER_PROXY_PATHS = {
+    "/rest/secure/angelbroking/order/v1/placeOrder",
+    "/rest/secure/angelbroking/order/v1/modifyOrder",
+    "/rest/secure/angelbroking/order/v1/cancelOrder",
+    "/rest/secure/angelbroking/order/v1/getOrderBook",
+    "/rest/secure/angelbroking/order/v1/getTradeBook",
+    "/rest/secure/angelbroking/order/v1/getPosition",
+    "/rest/secure/angelbroking/portfolio/v1/getHolding",
+    "/rest/secure/angelbroking/portfolio/v1/getAllHolding",
+    "/rest/secure/angelbroking/order/v1/convertPosition",
+    "/rest/secure/angelbroking/order/v1/details/{order_id}",
+}
+ACCOUNT_PROXY_PATHS = {
+    "/rest/secure/angelbroking/user/v1/getRMS",
+    "/rest/secure/angelbroking/margin/v1/batch",
+}
+
+
+def proxy_selected(path):
+    if path in MARKET_PROXY_PATHS:
+        return is_angel("market_data_source")
+    if path in ORDER_PROXY_PATHS:
+        return is_angel("order_data")
+    return path in ACCOUNT_PROXY_PATHS and is_angel("account_data")
+
+
+async def angel_response(request, path):
+    if active_session(request) is None:
+        return failed("Invalid or expired token", 403)
+    try:
+        data = await payload(request)
+        result = await asyncio.to_thread(
+            PROXY.forward, path, data, request.path_params.get("order_id"),
+        )
+        return Response(
+            content=result.content, status_code=result.status_code,
+            headers={"content-type": result.content_type},
+        )
+    except AngelOneRemoteError as exc:
+        return Response(
+            content=exc.reply.content, status_code=exc.reply.status_code,
+            headers={"content-type": exc.reply.content_type},
+        )
+    except Exception:
+        return error("Angel One request is unavailable", "AB2001", 503)
+
+
+async def transparent_angel_response(request):
+    """Return the real broker response for an untouched client request."""
+    try:
+        result = await asyncio.to_thread(
+            angelone_proxy.forward_transparent,
+            request.method,
+            request.url.path,
+            request.scope["query_string"].decode("latin-1"),
+            dict(request.headers),
+            await request.body(),
+        )
+        return Response(
+            content=result.content, status_code=result.status_code,
+            headers={"content-type": result.content_type},
+        )
+    except Exception:
+        return error("Angel One request is unavailable", "AB2001", 503)
+
 
 async def dispatch_rest(request: Request):
+    if transparent_angel_proxy_enabled():
+        return await transparent_angel_response(request)
     path = request.scope["route"].path
+    if proxy_selected(path):
+        return await angel_response(request, path)
     if handler := CORE_HANDLERS.get(path):
         return await handler(request)
     if path in {
@@ -157,6 +236,12 @@ async def dispatch_rest(request: Request):
     if path == "/rest/secure/angelbroking/order/v1/details/{order_id}":
         return await phase11.individual_order_details(request)
     return await phase11.HANDLERS[path](request)
+
+
+async def dispatch_unknown_rest(request: Request):
+    if transparent_angel_proxy_enabled():
+        return await transparent_angel_response(request)
+    return error("Endpoint is not supported", "AB1000", 404)
 
 
 @asynccontextmanager
@@ -177,7 +262,8 @@ app.include_router(admin_router)
 
 @app.middleware("http")
 async def smartapi_faults(request: Request, call_next):
-    if request.url.path.startswith(("/rest/", "/gtt-service/rest/")):
+    if (not transparent_angel_proxy_enabled()
+            and request.url.path.startswith(("/rest/", "/gtt-service/rest/"))):
         fault = active_fault()
         if fault:
             request.state.fault_mode = fault["mode"]
@@ -190,7 +276,8 @@ async def smartapi_faults(request: Request, call_next):
 
 @app.middleware("http")
 async def smartapi_rate_limit(request: Request, call_next):
-    if request.url.path.startswith(("/rest/", "/gtt-service/rest/")):
+    if (not transparent_angel_proxy_enabled()
+            and request.url.path.startswith(("/rest/", "/gtt-service/rest/"))):
         failure = limiter.check(request.url.path, request.state.audit_client_code)
         if failure:
             request.state.rate_limited = True
@@ -229,6 +316,12 @@ async def health():
 
 for method, path, name in SDK_ROUTES:
     app.add_api_route(path, dispatch_rest, methods=[method], name=name)
+
+
+app.add_api_route("/rest/{path:path}", dispatch_unknown_rest,
+                  methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+app.add_api_route("/gtt-service/{path:path}", dispatch_unknown_rest,
+                  methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 
 
 if __name__ == "__main__":

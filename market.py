@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 import yfinance as yf
 
 from auth import active_session, failed, payload
+from server_config import source as configured_source
 
 
 DB_PATH = None
@@ -138,7 +139,27 @@ class YahooProvider:
         return rows
 
 
+class DummyProvider:
+    """Fixed offline data for fully local runs."""
+    price = 100.05
+
+    def quote(self):
+        return {
+            "timestamp": datetime.now(IST), "open": self.price, "high": self.price,
+            "low": self.price, "close": self.price, "ltp": self.price, "volume": 0,
+        }
+
+    def candles(self, interval, end):
+        step = INTERVALS[interval][2]
+        end = end.replace(tzinfo=IST)
+        return [[
+            (end - step * (24 - index)).isoformat(), self.price, self.price,
+            self.price, self.price, 0,
+        ] for index in range(25)]
+
+
 PROVIDER = YahooProvider()
+DUMMY_PROVIDER = DummyProvider()
 CACHE = LastKnownCache()
 
 
@@ -338,12 +359,47 @@ class MarketDataService:
     def _item(self, exchange, symboltoken, tradingsymbol=None):
         item = mapping_for(exchange, symboltoken, tradingsymbol)
         if item is None:
+            if configured_source("market_data_source") is None:
+                return {
+                    "exchange": str(exchange).upper(), "symboltoken": str(symboltoken),
+                    "tradingsymbol": str(tradingsymbol or "").upper(),
+                    "yahoo_symbol": "",
+                }
             raise MarketDataError("Failed to get symbol details", "AB1018")
         return item
 
     def source(self, exchange, symboltoken):
+        selected = configured_source("market_data_source")
+        if selected is None:
+            return "DUMMY"
+        if selected == "angelone":
+            return "ANGELONE"
         override = override_for(exchange, symboltoken)
         return override["mode"] if override else "YAHOO"
+
+    def _angel_quote(self, exchange, symboltoken, tradingsymbol):
+        from angelone_proxy import PROXY, AngelOneError
+
+        try:
+            reply = PROXY.forward(
+                "/rest/secure/angelbroking/order/v1/getLtpData",
+                {"exchange": exchange, "tradingsymbol": tradingsymbol, "symboltoken": symboltoken},
+            )
+            result = reply.json()
+            values = result.get("data") if isinstance(result, dict) else None
+            if not result or not result.get("status") or not isinstance(values, dict):
+                raise AngelOneError("Angel One market request failed")
+        except AngelOneError as exc:
+            raise MarketDataError(str(exc), "AB2001", 503) from exc
+        return {
+            "exchange": str(values.get("exchange", exchange)).upper(),
+            "tradingsymbol": str(values.get("tradingsymbol", tradingsymbol)).upper(),
+            "symboltoken": str(values.get("symboltoken", symboltoken)),
+            "open": values.get("open", 0), "high": values.get("high", 0),
+            "low": values.get("low", 0), "close": values.get("close", 0),
+            "ltp": values.get("ltp", 0), "volume": values.get("volume", 0),
+            "timestamp": datetime.now(IST), "source": "ANGELONE",
+        }
 
     def _hijack_quote(self, override):
         ltp = override["ltp"]
@@ -361,6 +417,12 @@ class MarketDataService:
         }
 
     def quote(self, exchange, symboltoken, tradingsymbol=None):
+        selected = configured_source("market_data_source")
+        if selected is None:
+            item = self._item(exchange, symboltoken, tradingsymbol)
+            return {**dict(item), **DUMMY_PROVIDER.quote(), "source": "DUMMY"}
+        if selected == "angelone":
+            return self._angel_quote(exchange, symboltoken, tradingsymbol or "")
         item = self._item(exchange, symboltoken, tradingsymbol)
         override = override_for(item["exchange"], item["symboltoken"])
         if override and override["mode"] == "HIJACK":
@@ -372,6 +434,25 @@ class MarketDataService:
         return {**dict(item), **quote}
 
     def candles(self, exchange, symboltoken, interval, start, end):
+        selected = configured_source("market_data_source")
+        if selected is None:
+            return DUMMY_PROVIDER.candles(interval, end)
+        if selected == "angelone":
+            from angelone_proxy import PROXY, AngelOneError
+
+            try:
+                reply = PROXY.forward(
+                    "/rest/secure/angelbroking/historical/v1/getCandleData",
+                    {"exchange": exchange, "symboltoken": symboltoken, "interval": interval,
+                     "fromdate": start.strftime("%Y-%m-%d %H:%M"),
+                     "todate": end.strftime("%Y-%m-%d %H:%M")},
+                )
+                result = reply.json()
+                if not isinstance(result, dict) or not result.get("status"):
+                    raise AngelOneError("Angel One candle request failed")
+                return result.get("data") or []
+            except AngelOneError as exc:
+                raise MarketDataError(str(exc), "AB2001", 503) from exc
         item = self._item(exchange, symboltoken)
         if self.source(item["exchange"], item["symboltoken"]) == "HIJACK":
             rows = override_candles(item["exchange"], item["symboltoken"], start, end)

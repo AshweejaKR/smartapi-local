@@ -1,6 +1,9 @@
 fastapi
 uvicorn[standard]
 jinja2
-httpx
+httpx[socks]
 smartapi-python
+logzero
+websocket-client
 yfinance
+PyYAML

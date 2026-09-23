@@ -13,3 +13,4 @@ dist/
 *.log
 logs/
 reports/
+credentials.txt

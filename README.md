@@ -1,77 +1,78 @@
-# Local SmartAPI server
+# SmartAPI Local Server
 
-Local FastAPI simulator for Angel One SmartAPI REST. The official `smartapi-python` SDK should work by changing only `root`.
-
-```text
-SmartConnect(api_key="DUMMY_API_KEY", root="http://127.0.0.1:8000")
-```
+SmartAPI REST server. Use the official SDK with only the `root` changed.
 
 ## Run
 
 ```text
-pip install -r requirements.txt
-uvicorn app:app --reload
-
-# development/tests
-pip install -r requirements-dev.txt
-pytest
+git clone https://github.com/AshweejaKR/smartapi-local.git
+cd smartapi-local
+python -m venv .venv
 ```
 
-Admin UI: `http://127.0.0.1:8000/admin`
-
-## Main features
-
-- SmartAPI-compatible REST routes and response shapes
-- dummy users, fixed TOTP, JWT/refresh/feed tokens
-- Yahoo Finance market data plus per-symbol HIJACK LTP/volume/OHLCV
-- MARKET orders with configurable 1000 ms default fill delay
-- LIMIT orders stay open until price reaches the limit
-- persistent funds, orders, trades, positions and holdings in SQLite
-- configurable brokerage/taxes, rate limits and fault simulation
-- Jinja admin UI and LTP control panel
-- real-vs-local parity runner for Phase 14
-
-## Default local user
-
-| Field | Value |
-|---|---|
-| Client code | `DUMMY001` |
-| Password | `password` |
-| API key | `DUMMY_API_KEY` |
-| Fixed TOTP | `123456` |
-
-## Useful environment variables
-
-Server:
-- `SMARTAPI_HOST` (default `127.0.0.1`)
-- `SMARTAPI_PORT` (default `8000`)
-- `SMARTAPI_PUBLIC_HOST` for the displayed public/Elastic IP
-- `SMARTAPI_STARTUP_BANNER=0` to hide the startup banner
-- `SMARTAPI_ROOT` for the LTP control panel
-
-Simulator:
-- `SMARTAPI_ACCESS_TOKEN_TTL_SECONDS`, `SMARTAPI_REFRESH_TOKEN_TTL_SECONDS`
-- `SMARTAPI_FORCE_TOKEN_EXPIRY=1`, `SMARTAPI_DISABLE_TOTP=1`
-- `SMARTAPI_MARKET_FILL_DELAY_MS=1000`, `SMARTAPI_ORDER_CHECK_INTERVAL_MS=100`
-- `SMARTAPI_MARKET_CACHE_TTL_SECONDS=5`
-- `SMARTAPI_SHORT_MARGIN_PERCENT=20`, `SMARTAPI_SLOW_DELAY_MS=250`
-
-Parity:
-- `REAL_ENV_FILE`, `LOCAL_ROOT`, `LOCAL_DB`, `PARITY_REPORT_DIR`
-- `PARITY_API_DELAY`, `PARITY_POLL_TIMEOUT`, `PARITY_POLL_INTERVAL`
-- `ENABLE_REAL_ORDERS`, `ENABLE_REAL_200_QTY`, `ENABLE_REAL_MCX_ORDERS`
-- `CLEANUP_ENABLED`, `CLOSE_CONTROLLED_POSITIONS`
-
-Rate limiting is a local test feature. Before authentication, requests may be bucketed by the client code supplied in the request body; do not treat that value as authenticated identity.
-
-## Controls
-
-Use `/admin` for users, funds, market overrides, candles, charges, rate limits, faults, monitoring and resets.
-
-For quick LTP control:
+Windows: `.venv\Scripts\activate`  
+Linux: `source .venv/bin/activate`
 
 ```text
-python ltp_control_panel.py
+python -m pip install -r requirements.txt
+python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-See `ROUTES.md` for SDK routes and `SMARTAPI_LOCAL_SERVER_PLAN.md` for status and Phase 14 tests.
+Use `--host 0.0.0.0` on EC2. Open `/health` or `/admin`. Allow TCP `8000` in the EC2 security group.
+
+## Source config
+
+`default.yaml` is read at server startup. Restart after changes.
+
+| Setting | `angelone` | `yahoo` | `None` |
+|---|---|---|---|
+| `market_data_source` | Real LTP, quote, candles, OI | Yahoo data | LTP `100.05`, 25 candles |
+| `order_data` | Real orders, books, positions, holdings | — | Local SQLite simulator |
+| `account_data` | Real RMS and margin | — | Local SQLite funds/margin |
+
+Default safe mode: Yahoo market data and local orders/funds.
+
+Use another config file: set `SMARTAPI_CONFIG_FILE=C:\smartapi-local\real.yaml` on Windows, or `export SMARTAPI_CONFIG_FILE=/opt/smartapi-local/real.yaml` on Linux.
+
+### Full Angel One proxy
+
+Set all three sources to `angelone`. Use the real API key, client code, password and TOTP in the SDK. The server forwards request and broker response unchanged, including broker errors. `angelone_keys.env` is not used in this mode.
+
+### Partial Angel One mode
+
+Set only needed sources to `angelone`. Create `angelone_keys.env` beside the YAML file:
+
+```text
+API_KEY=your_api_key
+CLIENT_ID=your_client_code
+PASSWORD=your_password_or_mpin
+TOTP_SECRET=your_totp_secret
+```
+
+Also accepted: `ANGELONE_*`, `CLIENT_CODE`, `CLIENTCODE`, `MPIN`, `TOTP`.
+
+`order_data: angelone` places real orders.
+
+## Local SDK and comparison
+
+Local login: API key `DUMMY_API_KEY`; client `DUMMY001`; password `password`; TOTP `123456`.
+
+Run real-versus-local comparison only as a script:
+
+```text
+python test_smartapi_local.py
+```
+
+For full proxy: `set SMARTAPI_LOCAL_MODE=angelone`.  
+For dummy or partial mode: `set SMARTAPI_LOCAL_MODE=none`.
+
+`SMARTAPI_LOCAL_MODE` changes only comparison-script login values. It does not change server configuration. Script output hides passwords, TOTP, API keys and tokens.
+
+## Tests
+
+```text
+python -m pip install -r requirements-dev.txt
+python -m pytest -q --ignore=test_smartapi_local.py
+```
+
+Expected: `160 passed, 1 skipped`. `ROUTES.md` lists supported SDK routes; `SMARTAPI_LOCAL_SERVER_PLAN.md` tracks parity work.
