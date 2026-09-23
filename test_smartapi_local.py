@@ -2,6 +2,7 @@
 """Simple sequential real-versus-local SmartAPI smoke test."""
 
 from copy import deepcopy
+from os import getenv
 from time import sleep
 
 from pyotp import TOTP
@@ -12,6 +13,8 @@ EXCHANGE = "NSE"
 QTY = 1
 DELAY = 1
 LOCAL_ROOT = "http://127.0.0.1:8000"  # Or http://13.233.59.93:8000
+LOCAL_MODE = getenv("SMARTAPI_LOCAL_MODE", "angelone").strip().lower()
+LOCAL_DUMMY = ("DUMMY_API_KEY", "DUMMY001", "password", "123456")
 
 
 def load_credentials(path="credentials.txt"):
@@ -54,14 +57,20 @@ def response_value(response, *keys):
 
 
 creds = load_credentials()
+if LOCAL_MODE not in {"angelone", "none"}:
+    raise SystemExit("SMARTAPI_LOCAL_MODE must be angelone or none")
 client = SmartConnect(api_key=creds["API_KEY"])
-client_2 = SmartConnect(api_key=creds["API_KEY"], root=LOCAL_ROOT)
+local_api_key = creds["API_KEY"] if LOCAL_MODE == "angelone" else LOCAL_DUMMY[0]
+client_2 = SmartConnect(api_key=local_api_key, root=LOCAL_ROOT)
+print("local mode:", LOCAL_MODE)
 
 # 1. generateSession
 totp = TOTP(creds["TOTP_SECRET"]).now()
+real_login = (creds["CLIENT_ID"], creds["PASSWORD"], totp)
+local_login = real_login if LOCAL_MODE == "angelone" else LOCAL_DUMMY[1:]
 real_session, local_session = compare(
     "generateSession", "generateSession",
-    (creds["CLIENT_ID"], creds["PASSWORD"], totp),
+    real_login, local_login,
 )
 try:
     refresh_token = response_value(real_session, "data", "refreshToken")
@@ -100,9 +109,10 @@ order_params = {
     "price": 0,
     "quantity": QTY,
 }
+local_order_params = order_params | {"symboltoken": symbol_token_2}
 
 # 3. placeOrder - BUY. This makes two real orders.
-compare("placeOrder BUY", "placeOrder", (order_params,))
+compare("placeOrder BUY", "placeOrder", (order_params,), (local_order_params,))
 sleep(DELAY)
 
 # 4. orderBook, tradeBook
@@ -119,7 +129,8 @@ sleep(DELAY)
 
 # 6. placeOrder - SELL. This makes two real orders.
 order_params["transactiontype"] = "SELL"
-compare("placeOrder SELL", "placeOrder", (order_params,))
+local_order_params["transactiontype"] = "SELL"
+compare("placeOrder SELL", "placeOrder", (order_params,), (local_order_params,))
 sleep(DELAY)
 
 # 7. orderBook, tradeBook
@@ -139,7 +150,7 @@ compare("searchScrip", "searchScrip", (EXCHANGE, "NIFTYBEES"))
 sleep(DELAY)
 
 # 10. ltpData
-compare("ltpData", "ltpData", (EXCHANGE, SYMBOL, symbol_token))
+compare("ltpData", "ltpData", (EXCHANGE, SYMBOL, symbol_token), (EXCHANGE, SYMBOL, symbol_token_2))
 sleep(DELAY)
 
 # 11. getCandleData
@@ -150,7 +161,8 @@ candle_params = {
     "fromdate": "2026-09-01 09:15",
     "todate": "2026-09-20 15:30",
 }
-compare("getCandleData", "getCandleData", (candle_params,))
+local_candle_params = candle_params | {"symboltoken": symbol_token_2}
+compare("getCandleData", "getCandleData", (candle_params,), (local_candle_params,))
 sleep(DELAY)
 
 # 12. getMarginApi for 1 qty
@@ -165,12 +177,15 @@ margin_params = {
         "orderType": "MARKET",
     }],
 }
-compare("getMarginApi 1 qty", "getMarginApi", (margin_params,))
+local_margin_params = deepcopy(margin_params)
+local_margin_params["positions"][0]["token"] = symbol_token_2
+compare("getMarginApi 1 qty", "getMarginApi", (margin_params,), (local_margin_params,))
 sleep(DELAY)
 
 # 13. getMarginApi for 10 qty
 margin_params["positions"][0]["qty"] = QTY * 10
-compare("getMarginApi 10 qty", "getMarginApi", (margin_params,))
+local_margin_params["positions"][0]["qty"] = QTY * 10
+compare("getMarginApi 10 qty", "getMarginApi", (margin_params,), (local_margin_params,))
 sleep(DELAY)
 
 # 14. estimateCharges 1 order
@@ -185,15 +200,18 @@ charge_order = {
     "symbol_name": SYMBOL,
     "token": symbol_token,
 }
-compare("estimateCharges 1 order", "estimateCharges", ({"orders": [charge_order]},))
+local_charge_order = charge_order | {"token": symbol_token_2}
+compare("estimateCharges 1 order", "estimateCharges", ({"orders": [charge_order]},), ({"orders": [local_charge_order]},))
 sleep(DELAY)
 
 # 15. estimateCharges 2 same orders
 QTY *= 10
 charge_order["quantity"] = str(QTY)
+local_charge_order["quantity"] = str(QTY)
 compare(
     "estimateCharges 2 same orders", "estimateCharges",
     ({"orders": [charge_order, charge_order]},),
+    ({"orders": [local_charge_order, local_charge_order]},),
 )
 sleep(DELAY)
 
@@ -204,10 +222,13 @@ real_search, local_search = compare(
 )
 try:
     symbol_token_2 = response_value(real_search, "data")[0]["symboltoken"]
+    local_symbol_token_2 = response_value(local_search, "data")[0]["symboltoken"]
 except (KeyError, TypeError, IndexError):
     raise SystemExit(1)
 charge_order_2 = charge_order | {"symbol_name": SYMBOL_2, "token": symbol_token_2}
+local_charge_order_2 = local_charge_order | {"symbol_name": SYMBOL_2, "token": local_symbol_token_2}
 compare(
     "estimateCharges 2 different orders", "estimateCharges",
     ({"orders": [charge_order, charge_order_2]},),
+    ({"orders": [local_charge_order, local_charge_order_2]},),
 )
