@@ -85,6 +85,10 @@ compare(
 )
 sleep(DELAY)
 
+# 3. rmsLimit
+compare("rmsLimit", "rmsLimit")
+sleep(DELAY)
+
 # lookup symboltoken needed to place orders for NIFTYBEES-EQ
 real_search, local_search = compare(
     "symbol lookup", "searchScrip", (EXCHANGE, SYMBOL),
