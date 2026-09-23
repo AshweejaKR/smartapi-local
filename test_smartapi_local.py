@@ -15,6 +15,7 @@ DELAY = 1
 LOCAL_ROOT = "http://127.0.0.1:8000"  # Or http://13.233.59.93:8000
 LOCAL_MODE = getenv("SMARTAPI_LOCAL_MODE", "angelone").strip().lower()
 LOCAL_DUMMY = ("DUMMY_API_KEY", "DUMMY001", "password", "123456")
+SENSITIVE = ("token", "password", "secret", "totp", "apikey", "api_key", "authorization")
 
 
 def load_credentials(path="credentials.txt"):
@@ -36,15 +37,33 @@ def call(client, method, args):
         return {"exception": str(exc)}
 
 
+def redact(value, key=""):
+    if any(word in key.lower() for word in SENSITIVE):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {name: redact(item, name) for name, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return type(value)(redact(item) for item in value)
+    return value
+
+
+def display_args(label, args):
+    if label == "generateSession":
+        return (args[0], "[REDACTED]", "[REDACTED]")
+    if label == "getProfile":
+        return ("[REDACTED]",)
+    return redact(args)
+
+
 def compare(label, method, real_args=(), local_args=None):
     local_args = real_args if local_args is None else local_args
-    print(f"{label} real_args:", real_args)
-    print(f"{label} local_args:", local_args)
+    print(f"{label} real_args:", display_args(label, real_args))
+    print(f"{label} local_args:", display_args(label, local_args))
     real = call(client, method, real_args)
     sleep(DELAY)
     local = call(client_2, method, local_args)
-    print(f"{label} real:", real)
-    print(f"{label} local:", local)
+    print(f"{label} real:", redact(real))
+    print(f"{label} local:", redact(local))
     print(f"{label} same:", real == local)
     return real, local
 
