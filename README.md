@@ -1,14 +1,8 @@
 # SmartAPI Local Server
 
-FastAPI server compatible with Angel One SmartAPI REST. Use it with the official `smartapi-python` SDK by changing only `root`.
+SmartAPI REST server. Use the official SDK with only the `root` changed.
 
-It supports three data choices:
-
-- **Angel One**: forward selected requests to the real broker.
-- **Yahoo**: use Yahoo Finance for local market data.
-- **Dummy**: fixed offline LTP and candles.
-
-## Quick start
+## Run
 
 ```text
 git clone https://github.com/AshweejaKR/smartapi-local.git
@@ -16,171 +10,69 @@ cd smartapi-local
 python -m venv .venv
 ```
 
-Windows:
+Windows: `.venv\Scripts\activate`  
+Linux: `source .venv/bin/activate`
 
 ```text
-.venv\Scripts\activate
 python -m pip install -r requirements.txt
 python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-Linux / AWS EC2:
+Use `--host 0.0.0.0` on EC2. Open `/health` or `/admin`. Allow TCP `8000` in the EC2 security group.
 
-```text
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-python -m uvicorn app:app --host 0.0.0.0 --port 8000
-```
+## Source config
 
-Open:
-
-| Page | Address |
-|---|---|
-| Health | `http://127.0.0.1:8000/health` |
-| Admin | `http://127.0.0.1:8000/admin` |
-| Market controls | `http://127.0.0.1:8000/admin/market` |
-
-For an EC2 public address, allow TCP port `8000` in the security group, then open `http://<public-ip>:8000/admin`.
-
-## SDK client
-
-```python
-from SmartApi import SmartConnect
-
-api = SmartConnect(api_key="DUMMY_API_KEY", root="http://127.0.0.1:8000")
-session = api.generateSession("DUMMY001", "password", "123456")
-print(api.ltpData("NSE", "SBIN-EQ", "3045"))
-```
-
-Default local login:
-
-| Field | Value |
-|---|---|
-| Client code | `DUMMY001` |
-| Password | `password` |
-| API key | `DUMMY_API_KEY` |
-| Fixed TOTP | `123456` |
-
-## Source configuration
-
-The server reads `default.yaml` at startup. Set `SMARTAPI_CONFIG_FILE` to use another YAML file.
-
-```yaml
-market_data_source: yahoo # angelone/yahoo/None
-order_data: None          # angelone/None
-account_data: None        # angelone/None
-credentials_file: "angelone_keys.env"
-```
-
-The default is safe: Yahoo market data with local orders and local funds.
+`default.yaml` is read at server startup. Restart after changes.
 
 | Setting | `angelone` | `yahoo` | `None` |
 |---|---|---|---|
-| `market_data_source` | Real Angel LTP, quote, candles and OI | Yahoo market data; Admin HIJACK still works | LTP always `100.05`; 25 sample candles |
-| `order_data` | Real order placement, order/trade books, positions, holdings and conversion | Not allowed | Local SQLite order simulator |
-| `account_data` | Real Angel RMS/funds and batch margin | Not allowed | Local SQLite RMS/funds and batch margin |
+| `market_data_source` | Real LTP, quote, candles, OI | Yahoo data | LTP `100.05`, 25 candles |
+| `order_data` | Real orders, books, positions, holdings | — | Local SQLite simulator |
+| `account_data` | Real RMS and margin | — | Local SQLite funds/margin |
 
-`None`, `null`, empty value and `dummy` all select dummy market data. Restart the server after changing this file.
+Default safe mode: Yahoo market data and local orders/funds.
 
-### Use a separate config file
+Use another config file: set `SMARTAPI_CONFIG_FILE=C:\smartapi-local\real.yaml` on Windows, or `export SMARTAPI_CONFIG_FILE=/opt/smartapi-local/real.yaml` on Linux.
 
-Windows:
+### Full Angel One proxy
 
-```text
-set SMARTAPI_CONFIG_FILE=C:\smartapi-local\real.yaml
-python -m uvicorn app:app --host 127.0.0.1 --port 8000
-```
+Set all three sources to `angelone`. Use the real API key, client code, password and TOTP in the SDK. The server forwards request and broker response unchanged, including broker errors. `angelone_keys.env` is not used in this mode.
 
-Linux:
+### Partial Angel One mode
 
-```text
-export SMARTAPI_CONFIG_FILE=/opt/smartapi-local/real.yaml
-python -m uvicorn app:app --host 0.0.0.0 --port 8000
-```
-
-## Real Angel One mode
-
-Set only the required sources to `angelone`. Example: real broker data with local simulated orders:
-
-```yaml
-market_data_source: angelone
-order_data: None
-account_data: None
-credentials_file: "angelone_keys.env"
-```
-
-Example: full transparent Angel One proxy:
-
-```yaml
-market_data_source: angelone
-order_data: angelone
-account_data: angelone
-credentials_file: "angelone_keys.env"
-```
-
-Create `angelone_keys.env` beside the selected YAML file. This file is ignored by Git.
+Set only needed sources to `angelone`. Create `angelone_keys.env` beside the YAML file:
 
 ```text
-ANGELONE_API_KEY=your_api_key
-ANGELONE_CLIENT_CODE=your_client_code
-ANGELONE_PASSWORD=your_password_or_mpin
-ANGELONE_TOTP_SECRET=your_totp_secret
+API_KEY=your_api_key
+CLIENT_ID=your_client_code
+PASSWORD=your_password_or_mpin
+TOTP_SECRET=your_totp_secret
 ```
 
-Short names also work: `API_KEY`, `CLIENT_CODE`, `PASSWORD`, `TOTP_SECRET`.
+Also accepted: `ANGELONE_*`, `CLIENT_CODE`, `CLIENTCODE`, `MPIN`, `TOTP`.
 
-When all three source values are `angelone`, the server is a transparent Angel One proxy. Give the SDK the real API key, client code, password and TOTP; the server forwards the exact request body, query and authentication headers to Angel One. Its HTTP status and JSON body, including login and broker errors, return unchanged. The credentials file is not used in this full-proxy mode.
+`order_data: angelone` places real orders.
 
-When only some sources are `angelone`, the server uses the credentials file for those selected routes. If Angel One cannot be reached and no broker response exists, the server returns local HTTP `503`.
+## Local SDK and comparison
 
-> `order_data: angelone` places real orders. Use only after checking quantity, symbol and funds.
+Local login: API key `DUMMY_API_KEY`; client `DUMMY001`; password `password`; TOTP `123456`.
 
-## Local market controls
-
-With `market_data_source: yahoo`, `/admin/market` can set per-symbol `HIJACK` LTP, OHLCV and candles. Local MARKET/LIMIT execution uses the same effective price.
-
-For quick LTP control:
+Run real-versus-local comparison only as a script:
 
 ```text
-python ltp_control_panel.py
+python test_smartapi_local.py
 ```
 
-Local data stored in `smartapi_local.db`:
+For full proxy: `set SMARTAPI_LOCAL_MODE=angelone`.  
+For dummy or partial mode: `set SMARTAPI_LOCAL_MODE=none`.
 
-- users and funds
-- orders, trades, positions and holdings
-- market mappings, overrides and candles
-- charges, rate limits, faults and audit records
-
-Use `/admin` to manage this data. Real Angel One orders, positions, holdings and funds are never copied into local SQLite.
-
-## Run options
-
-| Option | Use |
-|---|---|
-| `SMARTAPI_HOST` | Bind host; default `127.0.0.1` |
-| `SMARTAPI_PORT` | Server port; default `8000` |
-| `SMARTAPI_PUBLIC_HOST` | Public/Elastic IP shown in startup output |
-| `SMARTAPI_CONFIG_FILE` | YAML configuration path |
-| `SMARTAPI_STARTUP_BANNER=0` | Hide startup addresses |
-| `SMARTAPI_MARKET_FILL_DELAY_MS` | Local MARKET fill delay; default `1000` |
-| `SMARTAPI_ORDER_CHECK_INTERVAL_MS` | Local fill checker interval; default `100` |
-| `SMARTAPI_MARKET_CACHE_TTL_SECONDS` | Yahoo cache duration; default `5` |
-| `SMARTAPI_DISABLE_TOTP=1` | Disable TOTP only for local testing |
-| `SMARTAPI_FORCE_TOKEN_EXPIRY=1` | Force local token-expiry tests |
-| `SMARTAPI_SHORT_MARGIN_PERCENT` | Local short margin; default `20` |
-| `SMARTAPI_SLOW_DELAY_MS` | Admin fault-mode delay; default `250` |
+`SMARTAPI_LOCAL_MODE` changes only comparison-script login values. It does not change server configuration. Script output hides passwords, TOTP, API keys and tokens.
 
 ## Tests
 
 ```text
 python -m pip install -r requirements-dev.txt
-python -m pytest -q
+python -m pytest -q --ignore=test_smartapi_local.py
 ```
 
-Expected current result: `159 passed, 1 skipped`. The skipped Yahoo smoke test runs only when `SMARTAPI_LIVE_YAHOO=1`.
-
-## More information
-
-- `ROUTES.md`: SDK route inventory.
-- `SMARTAPI_LOCAL_SERVER_PLAN.md`: project status and real-vs-local parity plan.
+Expected: `160 passed, 1 skipped`. `ROUTES.md` lists supported SDK routes; `SMARTAPI_LOCAL_SERVER_PLAN.md` tracks parity work.
