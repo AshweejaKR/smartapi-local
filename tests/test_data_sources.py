@@ -31,6 +31,10 @@ def local_headers(client):
     return {"Authorization": f"Bearer {response.json()['data']['jwtToken']}"}
 
 
+def test_proxy_accepts_client_id_credentials_alias():
+    assert angelone_proxy._value({"CLIENT_ID": "CLIENT001"}, "CLIENT_CODE", "CLIENT_ID") == "CLIENT001"
+
+
 def test_dummy_source_returns_fixed_price_and_25_candles(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "dummy.db")
     monkeypatch.setenv("SMARTAPI_CONFIG_FILE", str(config_file(tmp_path, market=None)))
