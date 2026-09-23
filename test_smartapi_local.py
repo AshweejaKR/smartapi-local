@@ -35,6 +35,8 @@ def call(client, method, args):
 
 def compare(label, method, real_args=(), local_args=None):
     local_args = real_args if local_args is None else local_args
+    print(f"{label} real_args:", real_args)
+    print(f"{label} local_args:", local_args)
     real = call(client, method, real_args)
     local = call(client_2, method, local_args)
     print(f"{label} real:", real)
