@@ -1,13 +1,15 @@
 """Phase 14 REAL-vs-LOCAL SmartAPI parity runner."""
 from __future__ import annotations
 
-import base64, hashlib, hmac, json, math, os, sqlite3, struct, time
+import json, math, os, sqlite3, time
 import logzero
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from SmartApi import SmartConnect
+from angelone_proxy import env_file as env, totp
 from auth import password_hash
+from common import delete_client
 
 ROOT = Path(__file__).resolve().parent
 SECRET = {"password", "totp", "apikey", "api_key", "jwttoken", "refreshtoken", "feedtoken", "authorization", "email", "mobileno"}
@@ -24,24 +26,6 @@ def flag(key, default=False):
 
 def cfg(key, default):
     return os.getenv(key, str(default))
-
-
-def env(path):
-    out = {}
-    for row in path.read_text().splitlines():
-        row = row.strip()
-        if row and not row.startswith("#") and "=" in row:
-            key, value = row.split("=", 1)
-            out[key.strip()] = value.strip().strip("\"'")
-    return out
-
-
-def totp(secret):
-    secret = secret.upper().replace(" ", "")
-    key = base64.b32decode(secret + "=" * (-len(secret) % 8))
-    digest = hmac.new(key, struct.pack(">Q", int(time.time() // 30)), hashlib.sha1).digest()
-    offset = digest[-1] & 15
-    return f"{(struct.unpack('>I', digest[offset:offset + 4])[0] & 0x7fffffff) % 1000000:06d}"
 
 
 def clean(value):
@@ -302,13 +286,7 @@ class Parity:
             return
         try:
             with sqlite3.connect(self.db) as conn:
-                conn.execute(
-                    "DELETE FROM order_events WHERE order_id IN "
-                    "(SELECT order_id FROM orders WHERE client_code=?)", (user,)
-                )
-                for table in ("sessions", "trades", "orders", "positions", "holdings", "gtt_rules", "accounts"):
-                    conn.execute(f"DELETE FROM {table} WHERE client_code=?", (user,))
-                conn.execute("DELETE FROM users WHERE client_code=?", (user,))
+                delete_client(conn, user)
             self.cleanup["local_user_deleted"] = user
         except Exception as exc:
             self.cleanup["errors"].append(

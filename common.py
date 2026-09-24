@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 
 
 DB_PATH = None
+OWNED_TABLES = ("orders", "trades", "positions", "holdings", "gtt_rules")
 
 
 def init_common(path):
@@ -17,6 +18,16 @@ def connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def delete_client(conn, client_code):
+    """Delete a client, its sessions, balance and all owned activity."""
+    conn.execute(
+        "DELETE FROM order_events WHERE order_id IN "
+        "(SELECT order_id FROM orders WHERE client_code=?)", (client_code,)
+    )
+    for table in ("sessions", "accounts", *OWNED_TABLES, "users"):
+        conn.execute(f"DELETE FROM {table} WHERE client_code=?", (client_code,))
 
 
 def ok(data=None, message="SUCCESS"):

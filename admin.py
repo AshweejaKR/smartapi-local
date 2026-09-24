@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 
 from auth import invalidate_sessions, password_hash
 from charges import CHARGE_FIELDS, init_charges, pnl_values
-from common import connect
+from common import OWNED_TABLES, connect, delete_client
 from fault import LOCK as FAULT_LOCK, active_fault, clear_fault, start_fault
 from orders import free_cash
 from market import CACHE, DEFAULT_MAPPINGS, delete_candle, list_mappings, mapping_for, override_candles, save_candle, save_override
@@ -393,7 +393,7 @@ async def edit_user(request: Request, old_client_code: str):
                     "UPDATE sessions SET client_code=? WHERE client_code=?",
                     (new_code, old_client_code),
                 )
-                for table in ("orders", "trades", "positions", "holdings", "gtt_rules"):
+                for table in OWNED_TABLES:
                     conn.execute(f"UPDATE {table} SET client_code=? WHERE client_code=?", (new_code, old_client_code))
                 record_audit(conn, "user.updated", f"Previous client code: {old_client_code}", new_code)
         except sqlite3.IntegrityError:
@@ -435,12 +435,7 @@ async def delete_user(client_code: str):
         ).fetchone()
         if found is None:
             return redirect("/admin/users", "User not found.")
-        conn.execute("DELETE FROM order_events WHERE order_id IN (SELECT order_id FROM orders WHERE client_code=?)", (client_code,))
-        conn.execute("DELETE FROM sessions WHERE client_code = ?", (client_code,))
-        conn.execute("DELETE FROM accounts WHERE client_code = ?", (client_code,))
-        for table in ("orders", "trades", "positions", "holdings", "gtt_rules"):
-            conn.execute(f"DELETE FROM {table} WHERE client_code = ?", (client_code,))
-        conn.execute("DELETE FROM users WHERE client_code = ?", (client_code,))
+        delete_client(conn, client_code)
         record_audit(conn, "user.deleted", "User and owned activity deleted", client_code)
     return redirect("/admin/users", "User deleted.")
 
