@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 
 from auth import invalidate_sessions, password_hash
 from charges import CHARGE_FIELDS, init_charges, pnl_values
+from common import connect
 from fault import LOCK as FAULT_LOCK, active_fault, clear_fault, start_fault
 from orders import free_cash
 from market import CACHE, DEFAULT_MAPPINGS, delete_candle, list_mappings, mapping_for, override_candles, save_candle, save_override
@@ -22,26 +23,17 @@ from rate_limit import DEFAULT_LIMITS, WINDOWS, limiter, list_limits, save_limit
 
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-DB_PATH = None
 CLIENT_CODE_RE = re.compile(r"[A-Za-z0-9_-]{3,32}")
 MOBILE_RE = re.compile(r"\+?[0-9]{7,15}")
 
 
-def init_admin(path):
-    global DB_PATH
-    DB_PATH = Path(path)
+def init_admin():
     with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS audit_log ("
             "id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, action TEXT NOT NULL, "
             "detail TEXT NOT NULL, client_code TEXT NOT NULL DEFAULT '')"
         )
-
-
-def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 async def form_data(request):

@@ -1,13 +1,11 @@
 """Persistent SmartAPI portfolio storage and views."""
 import asyncio
-from pathlib import Path
-import sqlite3
 
-from auth import active_session, failed
+from auth import active_session
 from charges import TRADE_FIELDS, pnl_values
+from common import connect, failed, ok
 from market import get_effective_ltp
 
-DB_PATH = None
 ORDER_STATUS = {
     "PENDING": "open pending", "OPEN": "open", "FILLED": "complete",
     "REJECTED": "rejected", "CANCELLED": "cancelled",
@@ -18,15 +16,7 @@ def api_order_status(value):
     return ORDER_STATUS.get(str(value).upper(), str(value).lower())
 
 
-def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_portfolio(path):
-    global DB_PATH
-    DB_PATH = Path(path)
+def init_portfolio():
     with connect() as conn:
         conn.execute("CREATE TABLE IF NOT EXISTS accounts (client_code TEXT PRIMARY KEY, available_balance REAL NOT NULL DEFAULT 0, used_funds REAL NOT NULL DEFAULT 0, realized_pnl REAL NOT NULL DEFAULT 0)")
         columns = {row[1] for row in conn.execute("PRAGMA table_info(accounts)")}
@@ -45,10 +35,6 @@ def price(row):
         return float(get_effective_ltp(row["exchange"], row["symboltoken"], row["tradingsymbol"]))
     except Exception:
         return float(row["last_price"])
-
-
-def result(data):
-    return {"status": True, "message": "SUCCESS", "errorcode": "", "data": data}
 
 
 def order_view(row):
@@ -87,7 +73,7 @@ async def rms_limit(request):
     net = round((account["available_balance"] if account else 0) - used, 2)
     realized = round(account["realized_pnl"] if account else 0, 2)
     unrealized = round(sum(row["unrealised"] for row in positions), 2)
-    return result({"net": net, "availablecash": net, "availableintradaypayin": 0, "availablelimitmargin": 0, "collateral": 0, "m2munrealized": unrealized, "m2mrealized": realized, "utiliseddebits": used, "utilisedcredits": 0, "spanmargin": 0, "exposuremargin": 0, "varmargin": 0, "adhocmargin": 0, "cashmarginavailable": net, "rmslimit": net, "unrealizedprofitandloss": unrealized, "realizedprofitandloss": realized, **pnl_values(realized, unrealized, account["total_charges"] if account else 0)})
+    return ok({"net": net, "availablecash": net, "availableintradaypayin": 0, "availablelimitmargin": 0, "collateral": 0, "m2munrealized": unrealized, "m2mrealized": realized, "utiliseddebits": used, "utilisedcredits": 0, "spanmargin": 0, "exposuremargin": 0, "varmargin": 0, "adhocmargin": 0, "cashmarginavailable": net, "rmslimit": net, "unrealizedprofitandloss": unrealized, "realizedprofitandloss": realized, **pnl_values(realized, unrealized, account["total_charges"] if account else 0)})
 
 
 async def order_book(request):
@@ -96,7 +82,7 @@ async def order_book(request):
         return failed("Invalid or expired token", 403)
     with connect() as conn:
         rows = conn.execute("SELECT * FROM orders WHERE client_code=? ORDER BY id DESC", (auth["client_code"],)).fetchall()
-    return result([order_view(row) for row in rows])
+    return ok([order_view(row) for row in rows])
 
 
 async def trade_book(request):
@@ -105,7 +91,7 @@ async def trade_book(request):
         return failed("Invalid or expired token", 403)
     with connect() as conn:
         rows = conn.execute("SELECT * FROM trades WHERE client_code=? ORDER BY id DESC", (auth["client_code"],)).fetchall()
-    return result([trade_view(row) for row in rows])
+    return ok([trade_view(row) for row in rows])
 
 
 async def positions(request):
@@ -115,7 +101,7 @@ async def positions(request):
     with connect() as conn:
         rows = conn.execute("SELECT * FROM positions WHERE client_code=? ORDER BY exchange, tradingsymbol", (auth["client_code"],)).fetchall()
     values = await asyncio.to_thread(lambda: [position_view(row) for row in rows])
-    return result(values)
+    return ok(values)
 
 
 async def holdings(request, all_holdings=False):
@@ -126,8 +112,8 @@ async def holdings(request, all_holdings=False):
         rows = conn.execute("SELECT * FROM holdings WHERE client_code=? ORDER BY exchange, tradingsymbol", (auth["client_code"],)).fetchall()
     values = await asyncio.to_thread(lambda: [holding_view(row) for row in rows])
     if not all_holdings:
-        return result(values)
+        return ok(values)
     value = round(sum(row["ltp"] * row["quantity"] for row in values), 2)
     invested = round(sum(row["averageprice"] * row["quantity"] for row in values), 2)
     pnl = round(value - invested, 2)
-    return result({"holdings": values, "totalholding": {"totalholdingvalue": value, "totalinvvalue": invested, "totalprofitandloss": pnl, "totalpnlpercentage": round(pnl * 100 / invested, 2) if invested else 0}})
+    return ok({"holdings": values, "totalholding": {"totalholdingvalue": value, "totalinvvalue": invested, "totalprofitandloss": pnl, "totalpnlpercentage": round(pnl * 100 / invested, 2) if invested else 0}})

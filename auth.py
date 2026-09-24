@@ -4,22 +4,16 @@ import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
 import secrets
-import sqlite3
 import time
 import uuid
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
+
+from common import connect, failed, ok
 
 
-DB_PATH = None
-
-
-def init_auth(path):
-    global DB_PATH
-    DB_PATH = Path(path)
+def init_auth():
     with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS users ("
@@ -41,12 +35,6 @@ def init_auth(path):
                 "Local Test User", "dummy@example.test", "9000000000",
             ),
         )
-
-
-def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def invalidate_sessions(client_code):
@@ -76,13 +64,6 @@ def new_tokens(client_code):
     payload = base64.urlsafe_b64encode(json.dumps({"sub": client_code, "exp": access_expires_at}).encode()).decode().rstrip("=")
     access = f"eyJhbGciOiJub25lIn0.{payload}.{secrets.token_urlsafe(12)}"
     return access, secrets.token_urlsafe(32), secrets.token_urlsafe(32), access_expires_at, refresh_expires_at
-
-
-def failed(message, status_code=401, data=None):
-    return JSONResponse(
-        status_code=status_code,
-        content={"status": False, "message": message, "errorcode": "AG8001", "data": data},
-    )
 
 
 def token_session(request):
@@ -142,7 +123,7 @@ async def login(request: Request):
             "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
             (str(uuid.uuid4()), client_code, access, refresh, feed, access_expires, refresh_expires, int(time.time())),
         )
-    return {"status": True, "message": "SUCCESS", "errorcode": "", "data": {"jwtToken": access, "refreshToken": refresh, "feedToken": feed}}
+    return ok({"jwtToken": access, "refreshToken": refresh, "feedToken": feed})
 
 
 async def generate_tokens(request: Request):
@@ -163,7 +144,7 @@ async def generate_tokens(request: Request):
             "UPDATE sessions SET access_token = ?, feed_token = ?, access_expires_at = ? WHERE id = ?",
             (access, feed, access_expires, session["id"]),
         )
-    return {"status": True, "message": "SUCCESS", "errorcode": "", "data": {"jwtToken": access, "refreshToken": refresh, "feedToken": feed}}
+    return ok({"jwtToken": access, "refreshToken": refresh, "feedToken": feed})
 
 
 async def profile(request: Request):
@@ -172,7 +153,7 @@ async def profile(request: Request):
         return failed("Invalid or expired token", 403)
     with connect() as conn:
         user = conn.execute("SELECT * FROM users WHERE client_code = ?", (session["client_code"],)).fetchone()
-    return {"status": True, "message": "SUCCESS", "errorcode": "", "data": profile_data(user)}
+    return ok(profile_data(user))
 
 
 async def logout(request: Request):
@@ -184,5 +165,5 @@ async def logout(request: Request):
         return failed("Client code does not match token", 403)
     with connect() as conn:
         conn.execute("UPDATE sessions SET active = 0 WHERE id = ?", (session["id"],))
-    return {"status": True, "message": "SUCCESS", "errorcode": "", "data": None}
+    return ok()
 

@@ -5,29 +5,19 @@ from datetime import datetime
 import logging
 import math
 import os
-from pathlib import Path
-import sqlite3
 import time
 import uuid
 
-from fastapi.responses import JSONResponse
-
-from auth import active_session, failed, payload
+from auth import active_session, payload
 from charges import TRADE_FIELDS, calculate_charges, pnl_values
+from common import connect, fail, failed, ok
 from market import MarketDataError, get_effective_ltp, mapping_for
 
-DB_PATH = None
 LOGGER = logging.getLogger("smartapi.orders")
 OPEN = ("OPEN", "PENDING")
 PRODUCTS = {"DELIVERY", "INTRADAY", "MARGIN", "CARRYFORWARD", "BO"}
 VARIETIES = {"NORMAL", "STOPLOSS", "AMO", "ROBO"}
 DURATIONS = {"DAY", "IOC"}
-
-
-def connect():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def stamp():
@@ -41,9 +31,7 @@ def setting(name, default):
         return default
 
 
-def init_orders(path):
-    global DB_PATH
-    DB_PATH = Path(path)
+def init_orders():
     with connect() as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(orders)")}
         for name, definition in {
@@ -66,18 +54,8 @@ def init_orders(path):
         )
 
 
-def error(message, code="AB1004", status_code=400):
-    return JSONResponse(
-        status_code=status_code,
-        content={"status": False, "message": message, "errorcode": code, "data": None},
-    )
-
-
 def success(row):
-    return {
-        "status": True, "message": "SUCCESS", "errorcode": "",
-        "data": {"orderid": row["order_id"], "uniqueorderid": row["unique_order_id"]},
-    }
+    return ok({"orderid": row["order_id"], "uniqueorderid": row["unique_order_id"]})
 
 
 def add_event(conn, order_id, status, text=""):
@@ -239,9 +217,9 @@ async def place_order(request):
         validate_instrument(values)
         price = await asyncio.to_thread(order_price, values)
     except ValueError as exc:
-        return error(str(exc))
+        return fail(str(exc))
     except MarketDataError as exc:
-        return error(str(exc), exc.errorcode, exc.status_code)
+        return fail(str(exc), exc.errorcode, exc.status_code)
     status = "PENDING" if values["order_type"] == "MARKET" else "OPEN"
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -249,13 +227,13 @@ async def place_order(request):
             reserved = required_funds(conn, auth["client_code"], values, price)
         except ValueError as exc:
             insert_order(conn, auth["client_code"], values, "REJECTED", 0, str(exc))
-            return error(str(exc), "AB1002")
+            return fail(str(exc), "AB1002")
         if reserved > free_cash(conn, auth["client_code"]):
             insert_order(
                 conn, auth["client_code"], values, "REJECTED", 0,
                 "Insufficient funds",
             )
-            return error("Insufficient funds", "AB1002")
+            return fail("Insufficient funds", "AB1002")
         row = insert_order(conn, auth["client_code"], values, status, reserved)
     return success(row)
 
@@ -272,9 +250,9 @@ async def modify_order(request):
             (order_id, auth["client_code"]),
         ).fetchone()
     if row is None:
-        return error("Order not found", "AB1010", 404)
+        return fail("Order not found", "AB1010", 404)
     if row["status"] not in OPEN:
-        return error("Only an open order can be modified", "AB1011")
+        return fail("Only an open order can be modified", "AB1011")
     try:
         values = parse_order(data, row)
         if any(values[key] != row[key] for key in (
@@ -284,9 +262,9 @@ async def modify_order(request):
         validate_instrument(values)
         price = await asyncio.to_thread(order_price, values)
     except ValueError as exc:
-        return error(str(exc))
+        return fail(str(exc))
     except MarketDataError as exc:
-        return error(str(exc), exc.errorcode, exc.status_code)
+        return fail(str(exc), exc.errorcode, exc.status_code)
 
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -295,13 +273,13 @@ async def modify_order(request):
             (order_id, auth["client_code"]),
         ).fetchone()
         if current is None or current["status"] not in OPEN:
-            return error("Only an open order can be modified", "AB1011")
+            return fail("Only an open order can be modified", "AB1011")
         try:
             reserved = required_funds(conn, auth["client_code"], values, price)
         except ValueError as exc:
-            return error(str(exc), "AB1002")
+            return fail(str(exc), "AB1002")
         if reserved > free_cash(conn, auth["client_code"], order_id):
-            return error("Insufficient funds", "AB1002")
+            return fail("Insufficient funds", "AB1002")
         status = "PENDING" if values["order_type"] == "MARKET" else "OPEN"
         now = stamp()
         conn.execute(
@@ -334,9 +312,9 @@ async def cancel_order(request):
             (order_id, auth["client_code"]),
         ).fetchone()
         if row is None:
-            return error("Order not found", "AB1010", 404)
+            return fail("Order not found", "AB1010", 404)
         if row["status"] not in OPEN:
-            return error("Only an open order can be cancelled", "AB1011")
+            return fail("Only an open order can be cancelled", "AB1011")
         conn.execute(
             "UPDATE orders SET status='CANCELLED', reserved_funds=0, text=?, "
             "updated_at=? WHERE order_id=?",

@@ -5,21 +5,18 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 import math
 import os
-from pathlib import Path
-import sqlite3
 import threading
 import time
 from zoneinfo import ZoneInfo
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
 import yfinance as yf
 
-from auth import active_session, failed, payload
+from auth import active_session, payload
+from common import connect, fail, failed, ok
 from server_config import source as configured_source
 
 
-DB_PATH = None
 IST = ZoneInfo("Asia/Kolkata")
 DEFAULT_MAPPINGS = (
     ("NSE", "SBIN-EQ", "3045", "SBIN.NS"),
@@ -163,15 +160,7 @@ DUMMY_PROVIDER = DummyProvider()
 CACHE = LastKnownCache()
 
 
-def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_market(path):
-    global DB_PATH
-    DB_PATH = Path(path)
+def init_market():
     with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS symbol_mappings ("
@@ -471,16 +460,8 @@ def get_effective_ltp(exchange, symboltoken, tradingsymbol=None):
     return MARKET_SERVICE.quote(exchange, symboltoken, tradingsymbol)["ltp"]
 
 
-def success(data):
-    return {"status": True, "message": "SUCCESS", "errorcode": "", "data": data}
-
-
 def market_error(exc):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"status": False, "message": str(exc),
-                 "errorcode": exc.errorcode, "data": None},
-    )
+    return fail(str(exc), exc.errorcode, exc.status_code)
 
 
 def secured(request):
@@ -499,7 +480,7 @@ async def ltp_data(request: Request):
         )
     except MarketDataError as exc:
         return market_error(exc)
-    return success({
+    return ok({
         "exchange": quote["exchange"], "tradingsymbol": quote["tradingsymbol"],
         "symboltoken": quote["symboltoken"], "open": quote["open"],
         "high": quote["high"], "low": quote["low"], "close": quote["close"],
@@ -556,7 +537,7 @@ async def market_data(request: Request):
                     "exchange": exchange, "symbolToken": str(token),
                     "message": str(exc), "errorCode": exc.errorcode,
                 })
-    return success({"fetched": fetched, "unfetched": unfetched})
+    return ok({"fetched": fetched, "unfetched": unfetched})
 
 
 async def candle_data(request: Request):
@@ -574,4 +555,4 @@ async def candle_data(request: Request):
         return market_error(MarketDataError("Invalid candle request", "AB1004"))
     except MarketDataError as exc:
         return market_error(exc)
-    return success(rows)
+    return ok(rows)
