@@ -37,7 +37,8 @@ All three `angelone` sources enable transparent proxy. A partial Angel One setup
 
 ```text
 python -m pip install -r requirements-dev.txt
-python -m pytest -q
+python -m pytest -m smoke -q   # quick: 25 passed, ~5s
+python -m pytest -q            # full offline: 160 passed, 1 skipped, ~90s
 ```
 
-Expected: 160 passed, 1 skipped.
+Tests are offline. The skipped test needs `SMARTAPI_LIVE_YAHOO=1`. `smartapi_parity.py` calls the real broker; run it only on purpose.
