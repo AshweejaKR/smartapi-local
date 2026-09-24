@@ -9,7 +9,7 @@ import app as app_module
 import fault
 import market
 import orders
-import phase11
+import extra_routes
 import portfolio
 import smartapi_parity as parity
 
@@ -78,7 +78,7 @@ def test_gtt_id_uses_max_not_count():
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE gtt_rules (id TEXT PRIMARY KEY)")
     conn.executemany("INSERT INTO gtt_rules VALUES (?)", [("1",), ("3",)])
-    assert phase11.next_gtt_id(conn) == "4"
+    assert extra_routes.next_gtt_id(conn) == "4"
 
 
 def test_api_order_status_matches_broker_values():
@@ -89,6 +89,7 @@ def test_api_order_status_matches_broker_values():
     assert {key: portfolio.api_order_status(key) for key in expected} == expected
 
 
+@pytest.mark.smoke
 def test_health_and_slow_fault(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "health.db")
     monkeypatch.setenv("SMARTAPI_SLOW_DELAY_MS", "125")

@@ -12,8 +12,9 @@ from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from auth import invalidate_sessions, password_hash
+from auth import default_user, invalidate_sessions, password_hash
 from charges import CHARGE_FIELDS, init_charges, pnl_values
+from common import OWNED_TABLES, connect, delete_client
 from fault import LOCK as FAULT_LOCK, active_fault, clear_fault, start_fault
 from orders import free_cash
 from market import CACHE, DEFAULT_MAPPINGS, delete_candle, list_mappings, mapping_for, override_candles, save_candle, save_override
@@ -22,26 +23,17 @@ from rate_limit import DEFAULT_LIMITS, WINDOWS, limiter, list_limits, save_limit
 
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-DB_PATH = None
 CLIENT_CODE_RE = re.compile(r"[A-Za-z0-9_-]{3,32}")
 MOBILE_RE = re.compile(r"\+?[0-9]{7,15}")
 
 
-def init_admin(path):
-    global DB_PATH
-    DB_PATH = Path(path)
+def init_admin():
     with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS audit_log ("
             "id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, action TEXT NOT NULL, "
             "detail TEXT NOT NULL, client_code TEXT NOT NULL DEFAULT '')"
         )
-
-
-def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 async def form_data(request):
@@ -174,16 +166,12 @@ async def monitor_page(request: Request, kind: str):
 
 
 @router.get("/audit")
+@router.get("/logs")
 async def audit_page(request: Request):
     active_fault()
     with connect() as conn:
         entries = recent_audit(conn)
     return templates.TemplateResponse(request, "audit.html", {"entries": entries})
-
-
-@router.get("/logs")
-async def logs_page(request: Request):
-    return await audit_page(request)
 
 
 def market_redirect(exchange, symboltoken, message):
@@ -209,6 +197,11 @@ def optional_int(value):
     if result < 0:
         raise ValueError
     return result
+
+
+def market_values(data, prefix="", prices=("open", "high", "low", "close")):
+    values = {key: optional_float(data.get(prefix + key)) for key in prices}
+    return {**values, "volume": optional_int(data.get(prefix + "volume"))}
 
 
 @router.get("/market")
@@ -243,26 +236,13 @@ async def save_market(request: Request):
             return market_redirect(exchange, symboltoken, "Candle deleted.")
         if data.get("action") == "save_candle":
             stamp = datetime.fromisoformat(data.get("timestamp", "")).replace(second=0, microsecond=0)
-            values = {
-                "open": optional_float(data.get("candle_open")),
-                "high": optional_float(data.get("candle_high")),
-                "low": optional_float(data.get("candle_low")),
-                "close": optional_float(data.get("candle_close")),
-                "volume": optional_int(data.get("candle_volume")),
-            }
-            if any(values[key] is None for key in ("open", "high", "low", "close", "volume")):
+            values = market_values(data, "candle_")
+            if None in values.values():
                 raise ValueError
             save_candle(exchange, symboltoken, stamp.isoformat(), values)
             audit("market.candle_saved", f"{exchange}:{symboltoken} {stamp.isoformat()}")
             return market_redirect(exchange, symboltoken, "Candle saved.")
-        values = {
-            "ltp": optional_float(data.get("ltp")),
-            "volume": optional_int(data.get("volume")),
-            "open": optional_float(data.get("open")),
-            "high": optional_float(data.get("high")),
-            "low": optional_float(data.get("low")),
-            "close": optional_float(data.get("close")),
-        }
+        values = market_values(data, prices=("ltp", "open", "high", "low", "close"))
         save_override(exchange, symboltoken, data.get("mode", "YAHOO"), values)
     except (TypeError, ValueError):
         return market_redirect(exchange, symboltoken, "Enter valid numeric market values.")
@@ -401,7 +381,7 @@ async def edit_user(request: Request, old_client_code: str):
                     "UPDATE sessions SET client_code=? WHERE client_code=?",
                     (new_code, old_client_code),
                 )
-                for table in ("orders", "trades", "positions", "holdings", "gtt_rules"):
+                for table in OWNED_TABLES:
                     conn.execute(f"UPDATE {table} SET client_code=? WHERE client_code=?", (new_code, old_client_code))
                 record_audit(conn, "user.updated", f"Previous client code: {old_client_code}", new_code)
         except sqlite3.IntegrityError:
@@ -443,12 +423,7 @@ async def delete_user(client_code: str):
         ).fetchone()
         if found is None:
             return redirect("/admin/users", "User not found.")
-        conn.execute("DELETE FROM order_events WHERE order_id IN (SELECT order_id FROM orders WHERE client_code=?)", (client_code,))
-        conn.execute("DELETE FROM sessions WHERE client_code = ?", (client_code,))
-        conn.execute("DELETE FROM accounts WHERE client_code = ?", (client_code,))
-        for table in ("orders", "trades", "positions", "holdings", "gtt_rules"):
-            conn.execute(f"DELETE FROM {table} WHERE client_code = ?", (client_code,))
-        conn.execute("DELETE FROM users WHERE client_code = ?", (client_code,))
+        delete_client(conn, client_code)
         record_audit(conn, "user.deleted", "User and owned activity deleted", client_code)
     return redirect("/admin/users", "User deleted.")
 
@@ -592,8 +567,7 @@ def reset_state(conn, action):
         for table in ("order_events", "trades", "orders", "gtt_rules", "sessions", "accounts", "users", "fault_events", "audit_log", "symbol_mappings"):
             conn.execute(f"DELETE FROM {table}")
         conn.execute("UPDATE fault_state SET mode='', started_at=NULL, ends_at=NULL WHERE id=1")
-        conn.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
-                     ("DUMMY001", password_hash("password"), "DUMMY_API_KEY", "123456", "Local Test User", "dummy@example.test", "9000000000"))
+        conn.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?, 1)", default_user())
         conn.execute("INSERT INTO accounts(client_code) VALUES ('DUMMY001')")
         conn.executemany("INSERT INTO symbol_mappings(exchange, tradingsymbol, symboltoken, yahoo_symbol) VALUES (?, ?, ?, ?)", DEFAULT_MAPPINGS)
     record_audit(conn, "reset." + action, RESETS[action][0])

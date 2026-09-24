@@ -4,23 +4,22 @@ from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 import sys
-import sqlite3
-import time
 
 from admin import init_admin, record_audit, router as admin_router
 import angelone_proxy
 from angelone_proxy import AngelOneRemoteError, PROXY
-from auth import active_session, failed, generate_tokens, init_auth, login, logout, payload, profile
+from auth import active_session, generate_tokens, init_auth, login, logout, payload, profile
 from charges import init_charges
+from common import connect, fail, failed, init_common, ok
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 from fault import active_fault, fault_response, init_faults, slow_delay_seconds
 from market import candle_data, init_market, ltp_data, market_data
 from orders import (
     cancel_order, init_orders, modify_order, order_checker, place_order, stop_checker,
 )
-import phase11
-from phase11 import init_phase11
+import extra_routes
+from extra_routes import init_extra_routes
 from portfolio import holdings, init_portfolio, order_book, positions, rms_limit, trade_book
 from rate_limit import client_code_for, init_rate_limits, limiter
 from server_config import init_config, is_angel, transparent_angel_proxy_enabled
@@ -33,7 +32,8 @@ DB_PATH = BASE_DIR / "smartapi_local.db"
 def init_db():
     """Create the local database and current phase tables."""
     init_config(BASE_DIR)
-    with sqlite3.connect(DB_PATH) as conn:
+    init_common(DB_PATH)
+    with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS server_meta "
             "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -41,17 +41,16 @@ def init_db():
         conn.execute(
             "INSERT OR IGNORE INTO server_meta(key, value) VALUES ('schema_version', '1')"
         )
-
-    init_auth(DB_PATH)
-    init_portfolio(DB_PATH)
-    init_admin(DB_PATH)
-    init_market(DB_PATH)
-    with sqlite3.connect(DB_PATH) as conn:
+    init_auth()
+    init_portfolio()
+    init_admin()
+    init_market()
+    with connect() as conn:
         init_charges(conn)
-    init_orders(DB_PATH)
-    init_phase11(DB_PATH)
-    init_rate_limits(DB_PATH)
-    init_faults(DB_PATH)
+    init_orders()
+    init_extra_routes()
+    init_rate_limits()
+    init_faults()
 
 
 def _cli_value(name, default):
@@ -76,17 +75,6 @@ def server_addresses():
     print(f"Admin      : {base}/admin")
     print(f"Health     : {base}/health")
     print("=" * 44 + "\n")
-
-
-def success(data=None, message="SUCCESS"):
-    return {"status": True, "message": message, "errorcode": "", "data": data}
-
-
-def error(message="Request failed", errorcode="AB1000", status_code=400, data=None):
-    return JSONResponse(
-        status_code=status_code,
-        content={"status": False, "message": message, "errorcode": errorcode, "data": data},
-    )
 
 
 # Method/path inventory from angel-one/smartapi-python SmartConnect._routes.
@@ -146,6 +134,8 @@ CORE_HANDLERS = {
     "/rest/secure/angelbroking/order/v1/cancelOrder": cancel_order,
     "/rest/secure/angelbroking/user/v1/getRMS": rms_limit,
     "/rest/secure/angelbroking/order/v1/getPosition": positions,
+    "/rest/secure/angelbroking/portfolio/v1/getHolding": holdings,
+    "/rest/secure/angelbroking/portfolio/v1/getAllHolding": lambda request: holdings(request, True),
 }
 
 MARKET_PROXY_PATHS = {
@@ -198,7 +188,7 @@ async def angel_response(request, path):
             headers={"content-type": exc.reply.content_type},
         )
     except Exception:
-        return error("Angel One request is unavailable", "AB2001", 503)
+        return fail("Angel One request is unavailable", "AB2001", 503)
 
 
 async def transparent_angel_response(request):
@@ -217,7 +207,7 @@ async def transparent_angel_response(request):
             headers={"content-type": result.content_type},
         )
     except Exception:
-        return error("Angel One request is unavailable", "AB2001", 503)
+        return fail("Angel One request is unavailable", "AB2001", 503)
 
 
 async def dispatch_rest(request: Request):
@@ -226,22 +216,13 @@ async def dispatch_rest(request: Request):
     path = request.scope["route"].path
     if proxy_selected(path):
         return await angel_response(request, path)
-    if handler := CORE_HANDLERS.get(path):
-        return await handler(request)
-    if path in {
-        "/rest/secure/angelbroking/portfolio/v1/getHolding",
-        "/rest/secure/angelbroking/portfolio/v1/getAllHolding",
-    }:
-        return await holdings(request, path.endswith("getAllHolding"))
-    if path == "/rest/secure/angelbroking/order/v1/details/{order_id}":
-        return await phase11.individual_order_details(request)
-    return await phase11.HANDLERS[path](request)
+    return await (CORE_HANDLERS.get(path) or extra_routes.HANDLERS[path])(request)
 
 
 async def dispatch_unknown_rest(request: Request):
     if transparent_angel_proxy_enabled():
         return await transparent_angel_response(request)
-    return error("Endpoint is not supported", "AB1000", 404)
+    return fail("Endpoint is not supported", "AB1000", 404)
 
 
 @asynccontextmanager
@@ -299,7 +280,7 @@ async def smartapi_audit(request: Request, call_next):
     finally:
         # Never persist headers, query strings, request bodies or token responses.
         detail = f"{request.method} {request.url.path} HTTP {status_code}"
-        with sqlite3.connect(DB_PATH) as conn:
+        with connect() as conn:
             record_audit(conn, "rest_request", detail, request.state.audit_client_code)
             if request.url.path.endswith("/loginByPassword"):
                 record_audit(conn, "login_attempt", detail, request.state.audit_client_code)
@@ -311,7 +292,7 @@ async def smartapi_audit(request: Request, call_next):
 
 @app.get("/health")
 async def health():
-    return success({"service": "smartapi-local"})
+    return ok({"service": "smartapi-local"})
 
 
 for method, path, name in SDK_ROUTES:

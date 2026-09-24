@@ -82,7 +82,7 @@ def forward_transparent(method, path, query, headers, body):
     )
 
 
-def _env_file(path):
+def env_file(path):
     if not path.exists():
         raise AngelOneError("Angel One credentials file is not available")
     result = {}
@@ -101,7 +101,7 @@ def _value(values, *names):
     raise AngelOneError("Angel One credentials file is incomplete")
 
 
-def _totp(secret):
+def totp(secret):
     secret = secret.upper().replace(" ", "")
     if secret.isdigit() and len(secret) == 6:
         return secret
@@ -118,14 +118,14 @@ class AngelOneProxy:
 
     def _login(self):
         path = SETTINGS["credentials_file"]
-        values = _env_file(path)
+        values = env_file(path)
         api_key = _value(values, "ANGELONE_API_KEY", "API_KEY")
         client_code = _value(values, "ANGELONE_CLIENT_CODE", "CLIENT_CODE", "CLIENT_ID", "CLIENTCODE")
         password = _value(values, "ANGELONE_PASSWORD", "PASSWORD", "MPIN")
         totp_secret = _value(values, "ANGELONE_TOTP_SECRET", "TOTP_SECRET", "TOTP")
         client = SmartConnect(api_key=api_key)
         reply = self._request(client, "api.login", "POST", {
-            "clientcode": client_code, "password": password, "totp": _totp(totp_secret),
+            "clientcode": client_code, "password": password, "totp": totp(totp_secret),
         })
         response = reply.json()
         if not isinstance(response, dict) or not response.get("status"):

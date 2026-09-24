@@ -92,6 +92,7 @@ def details(sdk, identifier):
     return sdk.make_authenticated_get_request(urljoin(sdk.root, path), sdk.access_token)
 
 
+@pytest.mark.smoke
 def test_inventory_matches_installed_official_sdk_and_registered_methods():
     assert set(SDK_METHODS) == set(SmartConnect._routes)
     expected = {}
@@ -111,6 +112,7 @@ def test_inventory_matches_installed_official_sdk_and_registered_methods():
     assert set(expected.values()) <= registered
 
 
+@pytest.mark.smoke
 def test_every_sdk_route_over_real_http(sdk_server):
     sdk, covered = sdk_server.sdk, set()
 

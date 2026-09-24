@@ -2,42 +2,22 @@
 import hashlib
 import json
 import math
-import sqlite3
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
-
-from auth import active_session, failed, payload
+from auth import active_session, payload
 from charges import CHARGE_FIELDS, calculate_charges
-from market import list_mappings
-from portfolio import connect, order_view
+from common import connect, fail, failed, ok
+from market import INTERVALS, list_mappings
+from portfolio import order_view
 
 
-DB_PATH = None
-
-
-def init_phase11(path):
-    global DB_PATH
-    DB_PATH = Path(path)
-    with sqlite3.connect(DB_PATH) as conn:
+def init_extra_routes():
+    with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS gtt_rules ("
             "id TEXT PRIMARY KEY, client_code TEXT NOT NULL, status TEXT NOT NULL, "
             "payload TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"
         )
-
-
-def result(data=None, message="SUCCESS"):
-    return {"status": True, "message": message, "errorcode": "", "data": data}
-
-
-def error(message, code="AB1004", status_code=400, data=None):
-    return JSONResponse(
-        status_code=status_code,
-        content={"status": False, "message": message, "errorcode": code, "data": data},
-    )
 
 
 def stable_number(value):
@@ -65,13 +45,13 @@ async def convert_position(request):
         if quantity <= 0 or float(data["quantity"]) != quantity:
             raise ValueError
     except (KeyError, TypeError, ValueError, OverflowError):
-        return error("quantity must be a positive integer")
+        return fail("quantity must be a positive integer")
     exchange, token = str(data.get("exchange", "")).upper(), str(data.get("symboltoken", ""))
     old, new = (str(data.get(key, "")).upper() for key in ("oldproducttype", "newproducttype"))
     products = {"DELIVERY", "CNC", "INTRADAY", "MIS", "MARGIN", "CARRYFORWARD", "NRML"}
     side = str(data.get("transactiontype", "")).upper()
     if not exchange or not token or old not in products or new not in products or old == new or side not in {"BUY", "SELL"}:
-        return error("Invalid position conversion parameters")
+        return fail("Invalid position conversion parameters")
     signed = quantity if side == "BUY" else -quantity
     key = (auth["client_code"], exchange, token)
     delivery = {"DELIVERY", "CNC"}
@@ -80,14 +60,14 @@ async def convert_position(request):
         source = conn.execute("SELECT * FROM positions WHERE client_code=? AND exchange=? AND symboltoken=? AND product_type=?", (*key, old)).fetchone()
         target = conn.execute("SELECT * FROM positions WHERE client_code=? AND exchange=? AND symboltoken=? AND product_type=?", (*key, new)).fetchone()
         if source is None or source["net_qty"] * signed <= 0 or quantity > abs(source["net_qty"]):
-            return error("Insufficient position quantity")
+            return fail("Insufficient position quantity")
         if target and target["net_qty"] * signed < 0:
-            return error("Cannot convert into an opposite position")
+            return fail("Cannot convert into an opposite position")
         if new in delivery and signed < 0:
-            return error("Short positions cannot be converted to delivery")
+            return fail("Short positions cannot be converted to delivery")
         holding = conn.execute("SELECT * FROM holdings WHERE client_code=? AND exchange=? AND symboltoken=?", key).fetchone()
         if old in delivery and new not in delivery and (holding is None or holding["quantity"] < quantity):
-            return error("Insufficient holding quantity")
+            return fail("Insufficient holding quantity")
         cost = round(source["avg_price"] * quantity, 2)
         leg = "buy" if signed > 0 else "sell"
         remaining = source["net_qty"] - signed
@@ -115,7 +95,7 @@ async def convert_position(request):
                 "INSERT INTO holdings(client_code,exchange,symboltoken,tradingsymbol,quantity,average_price,last_price) VALUES (?,?,?,?,?,?,?) ON CONFLICT(client_code,exchange,symboltoken) DO UPDATE SET quantity=excluded.quantity,average_price=excluded.average_price,last_price=excluded.last_price",
                 (*key, source["tradingsymbol"], held, held_average, source["last_price"]),
             )
-    return result(None)
+    return ok(None)
 
 
 async def search_scrip(request):
@@ -124,14 +104,14 @@ async def search_scrip(request):
     data = await payload(request)
     exchange, query = str(data.get("exchange", "")).upper(), str(data.get("searchscrip", "")).upper()
     if not exchange or not query:
-        return error("exchange and searchscrip are required")
+        return fail("exchange and searchscrip are required")
     values = [
         {"exchange": row["exchange"], "tradingsymbol": row["tradingsymbol"],
          "symboltoken": row["symboltoken"]}
         for row in list_mappings()
         if row["exchange"] == exchange and query in row["tradingsymbol"]
     ]
-    return result(values)
+    return ok(values)
 
 
 async def individual_order_details(request):
@@ -144,7 +124,7 @@ async def individual_order_details(request):
             "SELECT * FROM orders WHERE (order_id=? OR unique_order_id=?) AND client_code=?",
             (str(order_id), str(order_id), auth["client_code"]),
         ).fetchone()
-    return error("Order not found", "AB1013", 404) if row is None else result(order_view(row))
+    return fail("Order not found", "AB1013", 404) if row is None else ok(order_view(row))
 
 
 def _gtt_error(request):
@@ -165,7 +145,7 @@ async def gtt_create(request):
     required = ("tradingsymbol", "symboltoken", "exchange", "transactiontype",
                 "producttype", "price", "qty", "triggerprice")
     if any(data.get(name) in (None, "") for name in required):
-        return error("Invalid GTT parameters", "AB9001")
+        return fail("Invalid GTT parameters", "AB9001")
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         rule_id = next_gtt_id(conn)
@@ -174,7 +154,7 @@ async def gtt_create(request):
             "INSERT INTO gtt_rules VALUES (?, ?, 'NEW', ?, ?, ?)",
             (rule_id, active_session(request)["client_code"], json.dumps(data, sort_keys=True), stamp, stamp),
         )
-    return result({"id": rule_id})
+    return ok({"id": rule_id})
 
 
 async def gtt_modify(request):
@@ -186,11 +166,11 @@ async def gtt_modify(request):
     with connect() as conn:
         row = conn.execute("SELECT * FROM gtt_rules WHERE id=? AND client_code=?", (rule_id, auth["client_code"])).fetchone()
         if row is None:
-            return error("Invalid GTT rule id", "AB9013")
+            return fail("Invalid GTT rule id", "AB9013")
         values = json.loads(row["payload"])
         values.update({key: value for key, value in data.items() if key != "id"})
         conn.execute("UPDATE gtt_rules SET payload=?, updated_at=? WHERE id=?", (json.dumps(values, sort_keys=True), now(), rule_id))
-    return result({"id": rule_id})
+    return ok({"id": rule_id})
 
 
 async def gtt_cancel(request):
@@ -201,9 +181,9 @@ async def gtt_cancel(request):
     with connect() as conn:
         row = conn.execute("SELECT id FROM gtt_rules WHERE id=? AND client_code=?", (rule_id, auth["client_code"])).fetchone()
         if row is None:
-            return error("Invalid GTT rule id", "AB9013")
+            return fail("Invalid GTT rule id", "AB9013")
         conn.execute("UPDATE gtt_rules SET status='CANCELLED', updated_at=? WHERE id=?", (now(), rule_id))
-    return result({"id": rule_id})
+    return ok({"id": rule_id})
 
 
 async def gtt_details(request):
@@ -212,7 +192,7 @@ async def gtt_details(request):
     data, auth = await payload(request), active_session(request)
     with connect() as conn:
         row = conn.execute("SELECT * FROM gtt_rules WHERE id=? AND client_code=?", (str(data.get("id", "")), auth["client_code"])).fetchone()
-    return error("Invalid GTT rule id", "AB9013") if row is None else result(_rule(row))
+    return fail("Invalid GTT rule id", "AB9013") if row is None else ok(_rule(row))
 
 
 async def gtt_list(request):
@@ -221,19 +201,19 @@ async def gtt_list(request):
     data, auth = await payload(request), active_session(request)
     statuses = data.get("status", [])
     if not isinstance(statuses, list):
-        return error("status must be a list", "AB9004")
+        return fail("status must be a list", "AB9004")
     try:
         page, count = int(data.get("page", 1)), int(data.get("count", 10))
         if page < 1 or count < 1:
             raise ValueError
     except (TypeError, ValueError, OverflowError):
-        return error("page and count must be positive integers", "AB9004")
+        return fail("page and count must be positive integers", "AB9004")
     with connect() as conn:
         rows = conn.execute("SELECT * FROM gtt_rules WHERE client_code=? ORDER BY id", (auth["client_code"],)).fetchall()
     if statuses and "FORALL" not in statuses:
         rows = [row for row in rows if row["status"] in statuses]
     start = (page - 1) * count
-    return result([_rule(row) for row in rows[start:start + count]])
+    return ok([_rule(row) for row in rows[start:start + count]])
 
 
 async def oi_data(request):
@@ -243,18 +223,17 @@ async def oi_data(request):
     try:
         start = datetime.strptime(data["fromdate"], "%Y-%m-%d %H:%M")
         end = datetime.strptime(data["todate"], "%Y-%m-%d %H:%M")
-        step = {"ONE_MINUTE": 1, "THREE_MINUTE": 3, "FIVE_MINUTE": 5, "TEN_MINUTE": 10,
-                "FIFTEEN_MINUTE": 15, "THIRTY_MINUTE": 30, "ONE_HOUR": 60, "ONE_DAY": 1440}[str(data["interval"]).upper()]
+        step = INTERVALS[str(data["interval"]).upper()][2]
         if start > end:
             raise ValueError
     except (KeyError, TypeError, ValueError):
-        return error("Invalid OI request")
+        return fail("Invalid OI request")
     seed = stable_number(f"{data.get('exchange')}:{data.get('symboltoken')}")
     values, cursor = [], start
     while cursor <= end and len(values) < 2000:
         values.append({"time": cursor.strftime("%Y-%m-%dT%H:%M:00+05:30"), "oi": seed % 100000 + len(values) * 125})
-        cursor += timedelta(minutes=step)
-    return result(values)
+        cursor += step
+    return ok(values)
 
 
 async def margin_api(request):
@@ -263,22 +242,22 @@ async def margin_api(request):
     data = await payload(request)
     positions = data.get("positions", [])
     if not isinstance(positions, list) or len(positions) > 50:
-        return error("positions must contain at most 50 items")
+        return fail("positions must contain at most 50 items")
     total = 0.0
     premium = 0.0
     for item in positions:
         if not isinstance(item, dict):
-            return error("Invalid position")
+            return fail("Invalid position")
         try:
             amount = abs(float(item.get("qty", 0))) * float(item.get("price", 0) or 0)
             if not math.isfinite(amount) or amount < 0:
                 raise ValueError
         except (TypeError, ValueError):
-            return error("Invalid position")
+            return fail("Invalid position")
         total += amount * (0.2 if str(item.get("exchange", "")).upper() in {"NFO", "BFO", "MCX"} else 1)
         premium += amount if str(item.get("productType", "")).upper() == "DELIVERY" else 0
     margin = round(total, 2)
-    return result({"totalMarginRequired": margin, "marginComponents": {
+    return ok({"totalMarginRequired": margin, "marginComponents": {
         "netPremium": round(premium, 2), "spanMargin": margin, "marginBenefit": 0,
         "deliveryMargin": 0, "nonNFOMargin": 0, "totOptionsPremium": round(premium, 2)}})
 
@@ -289,22 +268,22 @@ async def estimate_charges(request):
     data = await payload(request)
     orders = data.get("orders", [])
     if not isinstance(orders, list):
-        return error("orders must be a list")
+        return fail("orders must be a list")
     totals, turnover, breakup = {}, 0.0, []
     with connect() as conn:
         for item in orders:
             if not isinstance(item, dict):
-                return error("Invalid order")
+                return fail("Invalid order")
             try:
                 values = calculate_charges(conn, float(item.get("price", 0)), int(item.get("quantity", 0)), str(item.get("transaction_type", "")).upper())
             except (TypeError, ValueError, OverflowError):
-                return error("Invalid order")
+                return fail("Invalid order")
             turnover += values["gross_trade_value"]
             for key in CHARGE_FIELDS:
                 amount = values[key]
                 totals[key] = round(totals.get(key, 0) + amount, 4)
         breakup = [{"name": key, "amount": amount} for key, amount in totals.items()]
-    return result({"summary": {"total_charges": round(sum(totals.values()), 4),
+    return ok({"summary": {"total_charges": round(sum(totals.values()), 4),
                                  "trade_value": round(turnover, 2), "breakup": breakup}})
 
 
@@ -313,9 +292,9 @@ async def verify_dis(request):
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if not data.get("isin") or not data.get("quantity"):
-        return error("isin and quantity are required")
+        return fail("isin and quantity are required")
     req_id = f"{stable_number(data['isin']) % 10**16:016d}"
-    return result({"ReqId": req_id, "ReturnURL": "https://trade.angelbroking.com/cdslpoa/response",
+    return ok({"ReqId": req_id, "ReturnURL": "https://trade.angelbroking.com/cdslpoa/response",
                    "DPId": "33200", "BOID": "1203320015222472",
                    "TransDtls": f"LOCAL-{req_id}", "version": "1.1"})
 
@@ -325,8 +304,8 @@ async def generate_tpin(request):
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if not all(data.get(key) for key in ("dpId", "ReqId", "boid", "pan")):
-        return error("dpId, ReqId, boid and pan are required")
-    return result({"ReqId": str(data["ReqId"]), "status": "SUCCESS", "message": "TPIN generation initiated"})
+        return fail("dpId, ReqId, boid and pan are required")
+    return ok({"ReqId": str(data["ReqId"]), "status": "SUCCESS", "message": "TPIN generation initiated"})
 
 
 async def transaction_status(request):
@@ -334,8 +313,8 @@ async def transaction_status(request):
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if not data.get("ReqId"):
-        return error("ReqId is required")
-    return result({"TransResDtls": {"ReqId": str(data["ReqId"]), "ReqType": "D",
+        return fail("ReqId is required")
+    return ok({"TransResDtls": {"ReqId": str(data["ReqId"]), "ReqType": "D",
                                     "ResId": f"LOCAL-{data['ReqId']}", "ResStatus": "1",
                                     "ResTime": datetime.now().strftime("%d%m%Y%H%M%S"),
                                     "ResError": "", "Remarks": "",
@@ -349,7 +328,7 @@ async def option_greek(request):
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if not data.get("name") or not data.get("expirydate"):
-        return error("name and expirydate are required")
+        return fail("name and expirydate are required")
     rows = []
     for index, option_type in enumerate(("CE", "PE")):
         rows.append({"name": str(data["name"]).upper(), "expiry": data["expirydate"],
@@ -357,7 +336,7 @@ async def option_greek(request):
                      "delta": "0.492400" if option_type == "CE" else "-0.507600",
                      "gamma": "0.002800", "theta": "-4.091800", "vega": "2.296700",
                      "impliedVolatility": "16.330000", "tradeVolume": "24048.00"})
-    return result(rows)
+    return ok(rows)
 
 
 def derivatives_rows(kind):
@@ -381,19 +360,19 @@ async def gainers_losers(request):
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if data.get("datatype") not in {"PercOIGainers", "PercOILosers", "PercPriceGainers", "PercPriceLosers"}:
-        return error("Invalid datatype")
+        return fail("Invalid datatype")
     if str(data.get("expirytype", "")).upper() not in {"NEAR", "NEXT", "FAR"}:
-        return error("Invalid expirytype")
+        return fail("Invalid expirytype")
     rows = derivatives_rows("gainers")
     if "Losers" in data["datatype"]:
         rows = [{**row, "percentChange": -abs(row["percentChange"]), "netChangeOpnInterest": -abs(row["netChangeOpnInterest"])} for row in rows]
-    return result(rows)
+    return ok(rows)
 
 
 async def put_call_ratio(request):
     if active_session(request) is None:
         return failed("Invalid or expired token", 403)
-    return result(derivatives_rows("pcr"))
+    return ok(derivatives_rows("pcr"))
 
 
 async def oi_buildup(request):
@@ -401,22 +380,23 @@ async def oi_buildup(request):
         return failed("Invalid or expired token", 403)
     data = await payload(request)
     if data.get("datatype") not in {"Long Built Up", "Short Built Up", "Short Covering", "Long Unwinding"}:
-        return error("Invalid datatype")
+        return fail("Invalid datatype")
     if str(data.get("expirytype", "")).upper() not in {"NEAR", "NEXT", "FAR"}:
-        return error("Invalid expirytype")
+        return fail("Invalid expirytype")
     rows = derivatives_rows("oi")
     if data["datatype"] in {"Short Built Up", "Long Unwinding"}:
         rows = [{**row, "netChange": f"{-abs(float(row['netChange'])):.2f}", "percentChange": f"{-abs(float(row['percentChange'])):.2f}"} for row in rows]
-    return result(rows)
+    return ok(rows)
 
 
 async def intraday(request, exchange):
     if active_session(request) is None:
         return failed("Invalid or expired token", 403)
     names = ("SBIN-EQ", "RELIANCE-EQ", "NIFTY")
-    return result([{"exchange": exchange, "SymbolName": name, "Multiplier": "5.0" if name != "NIFTY" else "1.0"} for name in names])
+    return ok([{"exchange": exchange, "SymbolName": name, "Multiplier": "5.0" if name != "NIFTY" else "1.0"} for name in names])
 
 HANDLERS = {
+    "/rest/secure/angelbroking/order/v1/details/{order_id}": individual_order_details,
     "/rest/secure/angelbroking/order/v1/convertPosition": convert_position,
     "/gtt-service/rest/secure/angelbroking/gtt/v1/createRule": gtt_create,
     "/gtt-service/rest/secure/angelbroking/gtt/v1/modifyRule": gtt_modify,

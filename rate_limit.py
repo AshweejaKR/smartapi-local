@@ -1,16 +1,13 @@
 """Small in-process, SQLite-configured SmartAPI rate limiter."""
 from collections import deque
 import json
-from pathlib import Path
 import re
-import sqlite3
 import threading
 import time
 
-from fastapi.responses import JSONResponse
+from common import connect, fail
 
 
-DB_PATH = None
 CONFIG_CACHE = None
 CONFIG_LOCK = threading.Lock()
 WINDOWS = (("per_second", 1), ("per_minute", 60), ("per_hour", 3600))
@@ -55,15 +52,7 @@ DEFAULT_LIMITS = [
 ]
 
 
-def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_rate_limits(path):
-    global DB_PATH
-    DB_PATH = Path(path)
+def init_rate_limits():
     with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS rate_limit_config ("
@@ -95,15 +84,10 @@ def list_limits():
 
 
 def save_limit(scope, target, per_second, per_minute, per_hour, enabled=True):
-    if scope not in {"endpoint", "group"}:
-        raise ValueError
     target = target.strip()
-    if scope == "endpoint" and not target.startswith("/"):
-        raise ValueError
-    if scope == "group" and target not in ROUTE_GROUPS:
-        raise ValueError
     values = [int(value) for value in (per_second, per_minute, per_hour)]
-    if any(value < 0 for value in values):
+    valid_target = target.startswith("/") if scope == "endpoint" else target in ROUTE_GROUPS
+    if scope not in {"endpoint", "group"} or not valid_target or min(values) < 0:
         raise ValueError
     with connect() as conn:
         conn.execute(
@@ -163,15 +147,7 @@ class RateLimiter:
                     while events and events[0] <= now - seconds:
                         events.popleft()
                     if len(events) >= limit:
-                        return JSONResponse(
-                            status_code=403,
-                            content={
-                                "status": False,
-                                "message": RATE_LIMIT_MESSAGE,
-                                "errorcode": "AB1004",
-                                "data": None,
-                            },
-                        )
+                        return fail(RATE_LIMIT_MESSAGE, "AB1004", 403)
             for row in configs:
                 for field, _ in WINDOWS:
                     if row[field]:

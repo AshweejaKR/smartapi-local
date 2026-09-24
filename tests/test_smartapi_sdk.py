@@ -7,7 +7,6 @@ from SmartApi import SmartConnect
 
 from charges import DEFAULTS
 from conftest import Ticker
-import market
 
 
 ORDER = {
@@ -196,6 +195,7 @@ def test_modify_and_cancel_never_fill(sdk_server):
     assert s.sdk.modifyOrder({"orderid": "unknown", "quantity": 4})["status"] is False
 
 
+@pytest.mark.smoke
 def test_modify_crossing_order_fills(sdk_server):
     s = sdk_server
     s.hijack(100)

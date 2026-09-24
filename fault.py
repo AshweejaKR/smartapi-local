@@ -1,15 +1,12 @@
 """Small SQLite-backed temporary SmartAPI fault simulator."""
 import logging
 import os
-from pathlib import Path
-import sqlite3
 import threading
 import time
 
-from fastapi.responses import JSONResponse
+from common import connect, fail
 
 
-DB_PATH = None
 CURRENT = None
 LOCK = threading.Lock()
 LOGGER = logging.getLogger("smartapi.faults")
@@ -23,9 +20,8 @@ MODE_ALIASES = {
 }
 
 
-def init_faults(path):
-    global DB_PATH, CURRENT
-    DB_PATH = Path(path)
+def init_faults():
+    global CURRENT
     with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS fault_state ("
@@ -46,12 +42,6 @@ def init_faults(path):
             if row and row["mode"]:
                 _finish(conn, row, now, "expired")
             CURRENT = None
-
-
-def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def normalize_mode(mode):
@@ -132,16 +122,12 @@ def clear_fault():
             CURRENT = None
 
 
+FAULT_RESPONSES = {
+    "auth": ("Invalid or expired token", "AG8001", 401),
+    "500": ("Internal server error", "AB1000", 500),
+    "timeout": ("Request timed out", "AB1000", 504),
+}
+
+
 def fault_response(mode):
-    if mode == "auth":
-        status_code, message, errorcode = 401, "Invalid or expired token", "AG8001"
-    elif mode == "500":
-        status_code, message, errorcode = 500, "Internal server error", "AB1000"
-    elif mode == "timeout":
-        status_code, message, errorcode = 504, "Request timed out", "AB1000"
-    else:
-        status_code, message, errorcode = 503, "Service unavailable", "AB1000"
-    return JSONResponse(
-        status_code=status_code,
-        content={"status": False, "message": message, "errorcode": errorcode, "data": None},
-    )
+    return fail(*FAULT_RESPONSES.get(mode, ("Service unavailable", "AB1000", 503)))

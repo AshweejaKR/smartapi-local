@@ -5,29 +5,19 @@ from datetime import datetime
 import logging
 import math
 import os
-from pathlib import Path
-import sqlite3
 import time
 import uuid
 
-from fastapi.responses import JSONResponse
-
-from auth import active_session, failed, payload
+from auth import active_session, payload
 from charges import TRADE_FIELDS, calculate_charges, pnl_values
+from common import connect, fail, failed, ok
 from market import MarketDataError, get_effective_ltp, mapping_for
 
-DB_PATH = None
 LOGGER = logging.getLogger("smartapi.orders")
 OPEN = ("OPEN", "PENDING")
 PRODUCTS = {"DELIVERY", "INTRADAY", "MARGIN", "CARRYFORWARD", "BO"}
 VARIETIES = {"NORMAL", "STOPLOSS", "AMO", "ROBO"}
 DURATIONS = {"DAY", "IOC"}
-
-
-def connect():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def stamp():
@@ -41,9 +31,7 @@ def setting(name, default):
         return default
 
 
-def init_orders(path):
-    global DB_PATH
-    DB_PATH = Path(path)
+def init_orders():
     with connect() as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(orders)")}
         for name, definition in {
@@ -66,18 +54,8 @@ def init_orders(path):
         )
 
 
-def error(message, code="AB1004", status_code=400):
-    return JSONResponse(
-        status_code=status_code,
-        content={"status": False, "message": message, "errorcode": code, "data": None},
-    )
-
-
 def success(row):
-    return {
-        "status": True, "message": "SUCCESS", "errorcode": "",
-        "data": {"orderid": row["order_id"], "uniqueorderid": row["unique_order_id"]},
-    }
+    return ok({"orderid": row["order_id"], "uniqueorderid": row["unique_order_id"]})
 
 
 def add_event(conn, order_id, status, text=""):
@@ -85,6 +63,15 @@ def add_event(conn, order_id, status, text=""):
         "INSERT INTO order_events(order_id, status, text, created_at) VALUES (?, ?, ?, ?)",
         (order_id, status, text, stamp()),
     )
+
+
+def close_order(conn, order_id, status, text):
+    """Move an open order to a final unfilled status and release its reservation."""
+    conn.execute(
+        "UPDATE orders SET status=?, reserved_funds=0, text=?, updated_at=? WHERE order_id=?",
+        (status, text, stamp(), order_id),
+    )
+    add_event(conn, order_id, status, text)
 
 
 def parse_order(data, current=None):
@@ -239,9 +226,9 @@ async def place_order(request):
         validate_instrument(values)
         price = await asyncio.to_thread(order_price, values)
     except ValueError as exc:
-        return error(str(exc))
+        return fail(str(exc))
     except MarketDataError as exc:
-        return error(str(exc), exc.errorcode, exc.status_code)
+        return fail(str(exc), exc.errorcode, exc.status_code)
     status = "PENDING" if values["order_type"] == "MARKET" else "OPEN"
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -249,13 +236,13 @@ async def place_order(request):
             reserved = required_funds(conn, auth["client_code"], values, price)
         except ValueError as exc:
             insert_order(conn, auth["client_code"], values, "REJECTED", 0, str(exc))
-            return error(str(exc), "AB1002")
+            return fail(str(exc), "AB1002")
         if reserved > free_cash(conn, auth["client_code"]):
             insert_order(
                 conn, auth["client_code"], values, "REJECTED", 0,
                 "Insufficient funds",
             )
-            return error("Insufficient funds", "AB1002")
+            return fail("Insufficient funds", "AB1002")
         row = insert_order(conn, auth["client_code"], values, status, reserved)
     return success(row)
 
@@ -272,9 +259,9 @@ async def modify_order(request):
             (order_id, auth["client_code"]),
         ).fetchone()
     if row is None:
-        return error("Order not found", "AB1010", 404)
+        return fail("Order not found", "AB1010", 404)
     if row["status"] not in OPEN:
-        return error("Only an open order can be modified", "AB1011")
+        return fail("Only an open order can be modified", "AB1011")
     try:
         values = parse_order(data, row)
         if any(values[key] != row[key] for key in (
@@ -284,9 +271,9 @@ async def modify_order(request):
         validate_instrument(values)
         price = await asyncio.to_thread(order_price, values)
     except ValueError as exc:
-        return error(str(exc))
+        return fail(str(exc))
     except MarketDataError as exc:
-        return error(str(exc), exc.errorcode, exc.status_code)
+        return fail(str(exc), exc.errorcode, exc.status_code)
 
     with connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -295,13 +282,13 @@ async def modify_order(request):
             (order_id, auth["client_code"]),
         ).fetchone()
         if current is None or current["status"] not in OPEN:
-            return error("Only an open order can be modified", "AB1011")
+            return fail("Only an open order can be modified", "AB1011")
         try:
             reserved = required_funds(conn, auth["client_code"], values, price)
         except ValueError as exc:
-            return error(str(exc), "AB1002")
+            return fail(str(exc), "AB1002")
         if reserved > free_cash(conn, auth["client_code"], order_id):
-            return error("Insufficient funds", "AB1002")
+            return fail("Insufficient funds", "AB1002")
         status = "PENDING" if values["order_type"] == "MARKET" else "OPEN"
         now = stamp()
         conn.execute(
@@ -334,15 +321,10 @@ async def cancel_order(request):
             (order_id, auth["client_code"]),
         ).fetchone()
         if row is None:
-            return error("Order not found", "AB1010", 404)
+            return fail("Order not found", "AB1010", 404)
         if row["status"] not in OPEN:
-            return error("Only an open order can be cancelled", "AB1011")
-        conn.execute(
-            "UPDATE orders SET status='CANCELLED', reserved_funds=0, text=?, "
-            "updated_at=? WHERE order_id=?",
-            ("Order cancelled", stamp(), order_id),
-        )
-        add_event(conn, order_id, "CANCELLED", "Order cancelled")
+            return fail("Only an open order can be cancelled", "AB1011")
+        close_order(conn, order_id, "CANCELLED", "Order cancelled")
     return success(row)
 
 
@@ -365,27 +347,20 @@ def update_position(conn, row, fill_price, total_charges):
         "AND product_type=?",
         key,
     ).fetchone()
-    old_qty = current["net_qty"] if current else 0
-    old_average = current["avg_price"] if current else 0
+    current = dict(current) if current else {}
+    old_qty = current.get("net_qty", 0)
+    old_average = current.get("avg_price", 0)
     signed = row["quantity"] if row["transaction_type"] == "BUY" else -row["quantity"]
     closed = min(abs(signed), abs(old_qty)) if old_qty * signed < 0 else 0
-    previous_realized = current["realized_pnl"] if current else 0
     gross_pnl = round(closed * (
         fill_price - old_average if old_qty > 0 else old_average - fill_price
     ), 2)
-    realized = previous_realized + gross_pnl
-    buy_qty = (current["buy_qty"] if current else 0) + (
-        row["quantity"] if signed > 0 else 0
-    )
-    sell_qty = (current["sell_qty"] if current else 0) + (
-        row["quantity"] if signed < 0 else 0
-    )
-    buy_amount = (current["buy_amount"] if current else 0) + (
-        fill_price * row["quantity"] if signed > 0 else 0
-    )
-    sell_amount = (current["sell_amount"] if current else 0) + (
-        fill_price * row["quantity"] if signed < 0 else 0
-    )
+    realized = current.get("realized_pnl", 0) + gross_pnl
+    quantity, amount = row["quantity"], fill_price * row["quantity"]
+    buy_qty = current.get("buy_qty", 0) + (quantity if signed > 0 else 0)
+    sell_qty = current.get("sell_qty", 0) + (quantity if signed < 0 else 0)
+    buy_amount = current.get("buy_amount", 0) + (amount if signed > 0 else 0)
+    sell_amount = current.get("sell_amount", 0) + (amount if signed < 0 else 0)
     conn.execute(
         "INSERT INTO positions(client_code, exchange, symboltoken, product_type, "
         "tradingsymbol, net_qty, buy_qty, sell_qty, buy_amount, sell_amount, avg_price, "
@@ -400,7 +375,7 @@ def update_position(conn, row, fill_price, total_charges):
             round(buy_amount, 2), round(sell_amount, 2),
             next_average(old_qty, old_average, signed, fill_price),
             round(realized, 2), fill_price,
-            round((current["total_charges"] if current else 0) + total_charges, 2),
+            round(current.get("total_charges", 0) + total_charges, 2),
         ),
     )
     return gross_pnl
@@ -459,21 +434,9 @@ def fill_order(order_id, ltp):
         try:
             needed = required_funds(conn, row["client_code"], values, fill_price)
         except ValueError as exc:
-            conn.execute(
-                "UPDATE orders SET status='REJECTED', reserved_funds=0, text=?, "
-                "updated_at=? WHERE order_id=?",
-                (str(exc), stamp(), order_id),
-            )
-            add_event(conn, order_id, "REJECTED", str(exc))
-            return
+            return close_order(conn, order_id, "REJECTED", str(exc))
         if needed > round(free_cash(conn, row["client_code"], order_id), 2):
-            conn.execute(
-                "UPDATE orders SET status='REJECTED', reserved_funds=0, text=?, "
-                "updated_at=? WHERE order_id=?",
-                ("Insufficient funds", stamp(), order_id),
-            )
-            add_event(conn, order_id, "REJECTED", "Insufficient funds")
-            return
+            return close_order(conn, order_id, "REJECTED", "Insufficient funds")
         now = stamp()
         conn.execute(
             "UPDATE orders SET status='FILLED', filled_quantity=quantity, "

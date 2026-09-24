@@ -46,6 +46,7 @@ def add_user(client):
     return client.post("/admin/users/add", data=USER, follow_redirects=False)
 
 
+@pytest.mark.smoke
 def test_admin_add_edit_disable_delete_changes_auth_immediately(client):
     assert client.get("/admin").status_code == 200
     assert add_user(client).status_code == 303

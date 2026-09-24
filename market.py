@@ -5,21 +5,18 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 import math
 import os
-from pathlib import Path
-import sqlite3
 import threading
 import time
 from zoneinfo import ZoneInfo
 
 from fastapi import Request
-from fastapi.responses import JSONResponse
 import yfinance as yf
 
-from auth import active_session, failed, payload
+from auth import active_session, payload
+from common import connect, fail, failed, ok
 from server_config import source as configured_source
 
 
-DB_PATH = None
 IST = ZoneInfo("Asia/Kolkata")
 DEFAULT_MAPPINGS = (
     ("NSE", "SBIN-EQ", "3045", "SBIN.NS"),
@@ -163,15 +160,7 @@ DUMMY_PROVIDER = DummyProvider()
 CACHE = LastKnownCache()
 
 
-def connect():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_market(path):
-    global DB_PATH
-    DB_PATH = Path(path)
+def init_market():
     with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS symbol_mappings ("
@@ -353,149 +342,95 @@ def cached(key, fetch):
     return value
 
 
-class MarketDataService:
-    """Select the effective source once for every market-data operation."""
+def _item(exchange, symboltoken, tradingsymbol=None):
+    item = mapping_for(exchange, symboltoken, tradingsymbol)
+    if item is None:
+        if configured_source("market_data_source") is None:
+            return {
+                "exchange": str(exchange).upper(), "symboltoken": str(symboltoken),
+                "tradingsymbol": str(tradingsymbol or "").upper(), "yahoo_symbol": "",
+            }
+        raise MarketDataError("Failed to get symbol details", "AB1018")
+    return item
 
-    def _item(self, exchange, symboltoken, tradingsymbol=None):
-        item = mapping_for(exchange, symboltoken, tradingsymbol)
-        if item is None:
-            if configured_source("market_data_source") is None:
-                return {
-                    "exchange": str(exchange).upper(), "symboltoken": str(symboltoken),
-                    "tradingsymbol": str(tradingsymbol or "").upper(),
-                    "yahoo_symbol": "",
-                }
-            raise MarketDataError("Failed to get symbol details", "AB1018")
-        return item
 
-    def source(self, exchange, symboltoken):
-        selected = configured_source("market_data_source")
-        if selected is None:
-            return "DUMMY"
-        if selected == "angelone":
-            return "ANGELONE"
-        override = override_for(exchange, symboltoken)
-        return override["mode"] if override else "YAHOO"
+def _angel_quote(exchange, symboltoken, tradingsymbol):
+    from angelone_proxy import PROXY, AngelOneError
 
-    def _angel_quote(self, exchange, symboltoken, tradingsymbol):
-        from angelone_proxy import PROXY, AngelOneError
-
-        try:
-            reply = PROXY.forward(
-                "/rest/secure/angelbroking/order/v1/getLtpData",
-                {"exchange": exchange, "tradingsymbol": tradingsymbol, "symboltoken": symboltoken},
-            )
-            result = reply.json()
-            values = result.get("data") if isinstance(result, dict) else None
-            if not result or not result.get("status") or not isinstance(values, dict):
-                raise AngelOneError("Angel One market request failed")
-        except AngelOneError as exc:
-            raise MarketDataError(str(exc), "AB2001", 503) from exc
-        return {
-            "exchange": str(values.get("exchange", exchange)).upper(),
-            "tradingsymbol": str(values.get("tradingsymbol", tradingsymbol)).upper(),
-            "symboltoken": str(values.get("symboltoken", symboltoken)),
-            "open": values.get("open", 0), "high": values.get("high", 0),
-            "low": values.get("low", 0), "close": values.get("close", 0),
-            "ltp": values.get("ltp", 0), "volume": values.get("volume", 0),
-            "timestamp": datetime.now(IST), "source": "ANGELONE",
-        }
-
-    def _hijack_quote(self, override):
-        ltp = override["ltp"]
-        values = {key: override[key] for key in ("open", "high", "low", "close")}
-        if ltp is None and values["close"] is not None:
-            ltp = values["close"]
-        if ltp is None:
-            raise MarketDataError("HIJACK LTP is not configured", "AB2001", 503)
-        for key in values:
-            if values[key] is None:
-                values[key] = ltp
-        return {
-            **values, "ltp": ltp, "volume": override["volume"] or 0,
-            "timestamp": datetime.now(IST), "source": "HIJACK",
-        }
-
-    def quote(self, exchange, symboltoken, tradingsymbol=None):
-        selected = configured_source("market_data_source")
-        if selected is None:
-            item = self._item(exchange, symboltoken, tradingsymbol)
-            return {**dict(item), **DUMMY_PROVIDER.quote(), "source": "DUMMY"}
-        if selected == "angelone":
-            return self._angel_quote(exchange, symboltoken, tradingsymbol or "")
-        item = self._item(exchange, symboltoken, tradingsymbol)
-        override = override_for(item["exchange"], item["symboltoken"])
-        if override and override["mode"] == "HIJACK":
-            quote = self._hijack_quote(override)
-        else:
-            key = ("quote", item["exchange"], item["symboltoken"], item["yahoo_symbol"])
-            quote = cached(key, lambda: PROVIDER.quote(item["yahoo_symbol"]))
-            quote = {**quote, "source": "YAHOO"}
-        return {**dict(item), **quote}
-
-    def candles(self, exchange, symboltoken, interval, start, end):
-        selected = configured_source("market_data_source")
-        if selected is None:
-            return DUMMY_PROVIDER.candles(interval, end)
-        if selected == "angelone":
-            from angelone_proxy import PROXY, AngelOneError
-
-            try:
-                reply = PROXY.forward(
-                    "/rest/secure/angelbroking/historical/v1/getCandleData",
-                    {"exchange": exchange, "symboltoken": symboltoken, "interval": interval,
-                     "fromdate": start.strftime("%Y-%m-%d %H:%M"),
-                     "todate": end.strftime("%Y-%m-%d %H:%M")},
-                )
-                result = reply.json()
-                if not isinstance(result, dict) or not result.get("status"):
-                    raise AngelOneError("Angel One candle request failed")
-                return result.get("data") or []
-            except AngelOneError as exc:
-                raise MarketDataError(str(exc), "AB2001", 503) from exc
-        item = self._item(exchange, symboltoken)
-        if self.source(item["exchange"], item["symboltoken"]) == "HIJACK":
-            rows = override_candles(item["exchange"], item["symboltoken"], start, end)
-            if rows is not None:
-                return rows
-            quote = self.quote(item["exchange"], item["symboltoken"])
-            stamp = start.replace(tzinfo=IST).isoformat()
-            return [[stamp, quote["open"], quote["high"], quote["low"], quote["close"],
-                     quote["volume"]]]
-        key = (
-            "candles", item["exchange"], item["symboltoken"], item["yahoo_symbol"],
-            interval, start.isoformat(), end.isoformat(),
+    try:
+        reply = PROXY.forward(
+            "/rest/secure/angelbroking/order/v1/getLtpData",
+            {"exchange": exchange, "tradingsymbol": tradingsymbol, "symboltoken": symboltoken},
         )
-        return cached(
-            key, lambda: PROVIDER.candles(item["yahoo_symbol"], interval, start, end)
-        )
+        result = reply.json()
+        values = result.get("data") if isinstance(result, dict) else None
+        if not result or not result.get("status") or not isinstance(values, dict):
+            raise AngelOneError("Angel One market request failed")
+    except AngelOneError as exc:
+        raise MarketDataError(str(exc), "AB2001", 503) from exc
+    return {
+        "exchange": str(values.get("exchange", exchange)).upper(),
+        "tradingsymbol": str(values.get("tradingsymbol", tradingsymbol)).upper(),
+        "symboltoken": str(values.get("symboltoken", symboltoken)),
+        **{key: values.get(key, 0) for key in ("open", "high", "low", "close", "ltp", "volume")},
+        "timestamp": datetime.now(IST), "source": "ANGELONE",
+    }
 
 
-MARKET_SERVICE = MarketDataService()
+def _hijack_quote(override):
+    ltp = override["ltp"] if override["ltp"] is not None else override["close"]
+    if ltp is None:
+        raise MarketDataError("HIJACK LTP is not configured", "AB2001", 503)
+    values = {key: ltp if override[key] is None else override[key]
+              for key in ("open", "high", "low", "close")}
+    return {
+        **values, "ltp": ltp, "volume": override["volume"] or 0,
+        "timestamp": datetime.now(IST), "source": "HIJACK",
+    }
 
 
 def get_quote(exchange, symboltoken, tradingsymbol=None):
-    return MARKET_SERVICE.quote(exchange, symboltoken, tradingsymbol)
+    """Quote from the configured source: DUMMY, ANGELONE, HIJACK or YAHOO."""
+    selected = configured_source("market_data_source")
+    if selected is None:
+        item = _item(exchange, symboltoken, tradingsymbol)
+        return {**dict(item), **DUMMY_PROVIDER.quote(), "source": "DUMMY"}
+    if selected == "angelone":
+        return _angel_quote(exchange, symboltoken, tradingsymbol or "")
+    item = _item(exchange, symboltoken, tradingsymbol)
+    override = override_for(item["exchange"], item["symboltoken"])
+    if override and override["mode"] == "HIJACK":
+        quote = _hijack_quote(override)
+    else:
+        key = ("quote", item["exchange"], item["symboltoken"], item["yahoo_symbol"])
+        quote = {**cached(key, lambda: PROVIDER.quote(item["yahoo_symbol"])), "source": "YAHOO"}
+    return {**dict(item), **quote}
 
 
 def get_candles(exchange, symboltoken, interval, start, end):
-    return MARKET_SERVICE.candles(exchange, symboltoken, interval, start, end)
+    if configured_source("market_data_source") is None:
+        return DUMMY_PROVIDER.candles(interval, end)
+    # angelone candle requests are proxied in app.dispatch_rest and never reach here.
+    item = _item(exchange, symboltoken)
+    override = override_for(item["exchange"], item["symboltoken"])
+    if override and override["mode"] == "HIJACK":
+        rows = override_candles(item["exchange"], item["symboltoken"], start, end)
+        if rows is not None:
+            return rows
+        quote = _hijack_quote(override)
+        stamp = start.replace(tzinfo=IST).isoformat()
+        return [[stamp, *(quote[key] for key in ("open", "high", "low", "close", "volume"))]]
+    key = ("candles", item["exchange"], item["symboltoken"], item["yahoo_symbol"],
+           interval, start.isoformat(), end.isoformat())
+    return cached(key, lambda: PROVIDER.candles(item["yahoo_symbol"], interval, start, end))
 
 
 def get_effective_ltp(exchange, symboltoken, tradingsymbol=None):
-    return MARKET_SERVICE.quote(exchange, symboltoken, tradingsymbol)["ltp"]
-
-
-def success(data):
-    return {"status": True, "message": "SUCCESS", "errorcode": "", "data": data}
+    return get_quote(exchange, symboltoken, tradingsymbol)["ltp"]
 
 
 def market_error(exc):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"status": False, "message": str(exc),
-                 "errorcode": exc.errorcode, "data": None},
-    )
+    return fail(str(exc), exc.errorcode, exc.status_code)
 
 
 def secured(request):
@@ -514,7 +449,7 @@ async def ltp_data(request: Request):
         )
     except MarketDataError as exc:
         return market_error(exc)
-    return success({
+    return ok({
         "exchange": quote["exchange"], "tradingsymbol": quote["tradingsymbol"],
         "symboltoken": quote["symboltoken"], "open": quote["open"],
         "high": quote["high"], "low": quote["low"], "close": quote["close"],
@@ -551,17 +486,15 @@ async def market_data(request: Request):
     data = await payload(request)
     mode = str(data.get("mode", "")).upper()
     exchange_tokens = data.get("exchangeTokens")
-    if mode not in {"LTP", "OHLC", "FULL"} or not isinstance(exchange_tokens, dict):
+    if (mode not in {"LTP", "OHLC", "FULL"} or not isinstance(exchange_tokens, dict)
+            or not exchange_tokens
+            or any(not isinstance(tokens, list) for tokens in exchange_tokens.values())):
         return market_error(MarketDataError("Invalid market data request", "AB1004"))
-    if not exchange_tokens or any(not isinstance(tokens, list) for tokens in exchange_tokens.values()):
-        return market_error(MarketDataError("Invalid market data request", "AB1004"))
-    requested = sum(len(tokens) for tokens in exchange_tokens.values() if isinstance(tokens, list))
+    requested = sum(len(tokens) for tokens in exchange_tokens.values())
     if requested == 0 or requested > 50:
         return market_error(MarketDataError("A maximum of 50 symbols is allowed", "AB1004"))
     fetched, unfetched = [], []
     for exchange, tokens in exchange_tokens.items():
-        if not isinstance(tokens, list):
-            continue
         for token in tokens:
             try:
                 quote = await asyncio.to_thread(get_quote, exchange, token)
@@ -571,7 +504,7 @@ async def market_data(request: Request):
                     "exchange": exchange, "symbolToken": str(token),
                     "message": str(exc), "errorCode": exc.errorcode,
                 })
-    return success({"fetched": fetched, "unfetched": unfetched})
+    return ok({"fetched": fetched, "unfetched": unfetched})
 
 
 async def candle_data(request: Request):
@@ -589,4 +522,4 @@ async def candle_data(request: Request):
         return market_error(MarketDataError("Invalid candle request", "AB1004"))
     except MarketDataError as exc:
         return market_error(exc)
-    return success(rows)
+    return ok(rows)

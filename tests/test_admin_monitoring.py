@@ -111,6 +111,7 @@ def test_every_reset_requires_explicit_confirmation(client, action):
     assert not any(row["action"].startswith("reset.") for row in rows("audit_log"))
 
 
+@pytest.mark.smoke
 def test_dashboard_monitors_rate_counters_audit_and_outage(client, monkeypatch):
     seed(client)
     save_limit("endpoint", RMS, 0, 0, 3)
