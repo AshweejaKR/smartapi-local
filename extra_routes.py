@@ -17,7 +17,7 @@ from portfolio import connect, order_view
 DB_PATH = None
 
 
-def init_phase11(path):
+def init_extra_routes(path):
     global DB_PATH
     DB_PATH = Path(path)
     with sqlite3.connect(DB_PATH) as conn:

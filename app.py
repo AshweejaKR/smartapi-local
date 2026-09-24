@@ -18,8 +18,8 @@ from market import candle_data, init_market, ltp_data, market_data
 from orders import (
     cancel_order, init_orders, modify_order, order_checker, place_order, stop_checker,
 )
-import phase11
-from phase11 import init_phase11
+import extra_routes
+from extra_routes import init_extra_routes
 from portfolio import holdings, init_portfolio, order_book, positions, rms_limit, trade_book
 from rate_limit import client_code_for, init_rate_limits, limiter
 from server_config import init_config, is_angel, transparent_angel_proxy_enabled
@@ -48,7 +48,7 @@ def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         init_charges(conn)
     init_orders(DB_PATH)
-    init_phase11(DB_PATH)
+    init_extra_routes(DB_PATH)
     init_rate_limits(DB_PATH)
     init_faults(DB_PATH)
 
@@ -233,8 +233,8 @@ async def dispatch_rest(request: Request):
     }:
         return await holdings(request, path.endswith("getAllHolding"))
     if path == "/rest/secure/angelbroking/order/v1/details/{order_id}":
-        return await phase11.individual_order_details(request)
-    return await phase11.HANDLERS[path](request)
+        return await extra_routes.individual_order_details(request)
+    return await extra_routes.HANDLERS[path](request)
 
 
 async def dispatch_unknown_rest(request: Request):
