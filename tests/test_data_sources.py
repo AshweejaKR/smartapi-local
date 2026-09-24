@@ -1,16 +1,15 @@
 import sqlite3
 
 from fastapi.testclient import TestClient
+import pytest
 import yaml
 
 import angelone_proxy
 import app as app_module
+from conftest import auth_headers
 
 
-LOGIN = {
-    "headers": {"X-PrivateKey": "DUMMY_API_KEY"},
-    "json": {"clientcode": "DUMMY001", "password": "password", "totp": "123456"},
-}
+pytestmark = pytest.mark.smoke
 
 
 def config_file(tmp_path, **values):
@@ -24,11 +23,6 @@ def config_file(tmp_path, **values):
     return path
 
 
-def local_headers(client):
-    response = client.post("/rest/auth/angelbroking/user/v1/loginByPassword", **LOGIN)
-    return {"Authorization": f"Bearer {response.json()['data']['jwtToken']}"}
-
-
 def test_proxy_accepts_client_id_credentials_alias():
     assert angelone_proxy._value({"CLIENT_ID": "CLIENT001"}, "CLIENT_CODE", "CLIENT_ID") == "CLIENT001"
 
@@ -37,7 +31,7 @@ def test_dummy_source_returns_fixed_price_and_25_candles(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "dummy.db")
     monkeypatch.setenv("SMARTAPI_CONFIG_FILE", str(config_file(tmp_path, market=None)))
     with TestClient(app_module.app) as client:
-        headers = local_headers(client)
+        headers = auth_headers(client)
         ltp = client.post(
             "/rest/secure/angelbroking/order/v1/getLtpData", headers=headers,
             json={"exchange": "NSE", "tradingsymbol": "ANY-EQ", "symboltoken": "123"},
@@ -67,7 +61,7 @@ def test_selected_angel_routes_forward_without_local_state(tmp_path, monkeypatch
 
     monkeypatch.setattr(angelone_proxy.PROXY, "forward", forward)
     with TestClient(app_module.app) as client:
-        headers = local_headers(client)
+        headers = auth_headers(client)
         paths = [
             ("/rest/secure/angelbroking/order/v1/getLtpData", {"exchange": "NSE", "tradingsymbol": "SBIN-EQ", "symboltoken": "3045"}),
             ("/rest/secure/angelbroking/order/v1/placeOrder", {"exchange": "NSE", "tradingsymbol": "SBIN-EQ", "symboltoken": "3045", "quantity": "1"}),

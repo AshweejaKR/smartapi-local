@@ -1,6 +1,11 @@
 import json
 
+import pytest
+
 import smartapi_parity as parity
+
+
+pytestmark = pytest.mark.smoke
 
 
 def test_redaction_normalisation_and_structure():

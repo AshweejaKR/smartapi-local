@@ -89,6 +89,7 @@ def test_api_order_status_matches_broker_values():
     assert {key: portfolio.api_order_status(key) for key in expected} == expected
 
 
+@pytest.mark.smoke
 def test_health_and_slow_fault(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "health.db")
     monkeypatch.setenv("SMARTAPI_SLOW_DELAY_MS", "125")

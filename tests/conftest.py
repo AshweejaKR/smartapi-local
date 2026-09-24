@@ -12,6 +12,26 @@ import uvicorn
 
 import app as app_module
 import market
+from portfolio import api_order_status
+
+
+LOGIN_PATH = "/rest/auth/angelbroking/user/v1/loginByPassword"
+DUMMY_LOGIN = {"clientcode": "DUMMY001", "password": "password", "totp": "123456"}
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "smoke: fast offline checks run with `pytest -m smoke`")
+
+
+def sign_in(client):
+    """Log DUMMY001 in over REST and return its token data."""
+    response = client.post(LOGIN_PATH, headers={"X-PrivateKey": "DUMMY_API_KEY"}, json=DUMMY_LOGIN)
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def auth_headers(client):
+    return {"Authorization": f"Bearer {sign_in(client)['jwtToken']}"}
 
 
 class Ticker:
@@ -75,10 +95,7 @@ class SDKServer:
         assert response.status_code == 303
 
     def wait_order(self, order_id, status="FILLED", timeout=4):
-        expected = {
-            "PENDING": "open pending", "OPEN": "open", "FILLED": "complete",
-            "REJECTED": "rejected", "CANCELLED": "cancelled",
-        }.get(status.upper(), status.lower())
+        expected = api_order_status(status)
         deadline = time.monotonic() + timeout
         row = None
         while time.monotonic() < deadline:

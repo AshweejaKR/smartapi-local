@@ -6,7 +6,11 @@ import pandas as pd
 import pytest
 
 import app as app_module
+from conftest import auth_headers
 import market
+
+
+pytestmark = pytest.mark.smoke
 
 
 class FakeProvider:
@@ -28,15 +32,6 @@ class FakeProvider:
         if self.fail:
             raise ConnectionError("Yahoo is unavailable")
         return [["2026-09-08T10:00:00+05:30", 100.0, 102.0, 99.0, 101.0, 500]]
-
-
-def auth_headers(client):
-    response = client.post(
-        "/rest/auth/angelbroking/user/v1/loginByPassword",
-        headers={"X-PrivateKey": "DUMMY_API_KEY"},
-        json={"clientcode": "DUMMY001", "password": "password", "totp": "123456"},
-    )
-    return {"Authorization": f"Bearer {response.json()['data']['jwtToken']}"}
 
 
 @pytest.fixture

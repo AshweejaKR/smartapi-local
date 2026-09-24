@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 import app as app_module
+from conftest import auth_headers
 
 
 RMS_PATH = "/rest/secure/angelbroking/user/v1/getRMS"
@@ -14,15 +15,6 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "rate-limits.db")
     with TestClient(app_module.app) as test_client:
         yield test_client
-
-
-def auth_headers(client):
-    response = client.post(
-        "/rest/auth/angelbroking/user/v1/loginByPassword",
-        headers={"X-PrivateKey": "DUMMY_API_KEY"},
-        json={"clientcode": "DUMMY001", "password": "password", "totp": "123456"},
-    )
-    return {"Authorization": f"Bearer {response.json()['data']['jwtToken']}"}
 
 
 def save_limit(client, scope, target, second=0, minute=0, hour=0, enabled="on"):
@@ -40,6 +32,7 @@ def save_limit(client, scope, target, second=0, minute=0, hour=0, enabled="on"):
     )
 
 
+@pytest.mark.smoke
 def test_endpoint_limit_uses_smartapi_error_and_runtime_update(client):
     headers = auth_headers(client)
     assert save_limit(client, "endpoint", RMS_PATH, second=1).status_code == 303

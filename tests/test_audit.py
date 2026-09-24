@@ -8,14 +8,13 @@ import pytest
 
 import app as app_module
 import auth
+from conftest import DUMMY_LOGIN as CREDENTIALS, LOGIN_PATH as LOGIN, sign_in
 from fault import clear_fault, start_fault
 from rate_limit import save_limit
 
 
-LOGIN = "/rest/auth/angelbroking/user/v1/loginByPassword"
 PROFILE = "/rest/secure/angelbroking/user/v1/getProfile"
 REFRESH = "/rest/auth/angelbroking/jwt/v1/generateTokens"
-CREDENTIALS = {"clientcode": "DUMMY001", "password": "password", "totp": "123456"}
 
 
 @pytest.fixture
@@ -27,18 +26,13 @@ def client(tmp_path, monkeypatch):
         yield client
 
 
-def sign_in(client):
-    result = client.post(LOGIN, json=CREDENTIALS, headers={"X-PrivateKey": "DUMMY_API_KEY"})
-    assert result.status_code == 200
-    return result.json()["data"]
-
-
 def entries():
     with sqlite3.connect(app_module.DB_PATH) as conn:
         conn.row_factory = sqlite3.Row
         return [dict(row) for row in conn.execute("SELECT * FROM audit_log ORDER BY id")]
 
 
+@pytest.mark.smoke
 def test_requests_login_rate_limit_and_fault_are_audited_without_secrets(client):
     tokens = sign_in(client)
     headers = {"Authorization": "Bearer " + tokens["jwtToken"]}
