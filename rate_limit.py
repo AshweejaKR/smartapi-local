@@ -84,15 +84,10 @@ def list_limits():
 
 
 def save_limit(scope, target, per_second, per_minute, per_hour, enabled=True):
-    if scope not in {"endpoint", "group"}:
-        raise ValueError
     target = target.strip()
-    if scope == "endpoint" and not target.startswith("/"):
-        raise ValueError
-    if scope == "group" and target not in ROUTE_GROUPS:
-        raise ValueError
     values = [int(value) for value in (per_second, per_minute, per_hour)]
-    if any(value < 0 for value in values):
+    valid_target = target.startswith("/") if scope == "endpoint" else target in ROUTE_GROUPS
+    if scope not in {"endpoint", "group"} or not valid_target or min(values) < 0:
         raise ValueError
     with connect() as conn:
         conn.execute(

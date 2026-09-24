@@ -12,7 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from auth import invalidate_sessions, password_hash
+from auth import default_user, invalidate_sessions, password_hash
 from charges import CHARGE_FIELDS, init_charges, pnl_values
 from common import OWNED_TABLES, connect, delete_client
 from fault import LOCK as FAULT_LOCK, active_fault, clear_fault, start_fault
@@ -166,16 +166,12 @@ async def monitor_page(request: Request, kind: str):
 
 
 @router.get("/audit")
+@router.get("/logs")
 async def audit_page(request: Request):
     active_fault()
     with connect() as conn:
         entries = recent_audit(conn)
     return templates.TemplateResponse(request, "audit.html", {"entries": entries})
-
-
-@router.get("/logs")
-async def logs_page(request: Request):
-    return await audit_page(request)
 
 
 def market_redirect(exchange, symboltoken, message):
@@ -201,6 +197,11 @@ def optional_int(value):
     if result < 0:
         raise ValueError
     return result
+
+
+def market_values(data, prefix="", prices=("open", "high", "low", "close")):
+    values = {key: optional_float(data.get(prefix + key)) for key in prices}
+    return {**values, "volume": optional_int(data.get(prefix + "volume"))}
 
 
 @router.get("/market")
@@ -235,26 +236,13 @@ async def save_market(request: Request):
             return market_redirect(exchange, symboltoken, "Candle deleted.")
         if data.get("action") == "save_candle":
             stamp = datetime.fromisoformat(data.get("timestamp", "")).replace(second=0, microsecond=0)
-            values = {
-                "open": optional_float(data.get("candle_open")),
-                "high": optional_float(data.get("candle_high")),
-                "low": optional_float(data.get("candle_low")),
-                "close": optional_float(data.get("candle_close")),
-                "volume": optional_int(data.get("candle_volume")),
-            }
-            if any(values[key] is None for key in ("open", "high", "low", "close", "volume")):
+            values = market_values(data, "candle_")
+            if None in values.values():
                 raise ValueError
             save_candle(exchange, symboltoken, stamp.isoformat(), values)
             audit("market.candle_saved", f"{exchange}:{symboltoken} {stamp.isoformat()}")
             return market_redirect(exchange, symboltoken, "Candle saved.")
-        values = {
-            "ltp": optional_float(data.get("ltp")),
-            "volume": optional_int(data.get("volume")),
-            "open": optional_float(data.get("open")),
-            "high": optional_float(data.get("high")),
-            "low": optional_float(data.get("low")),
-            "close": optional_float(data.get("close")),
-        }
+        values = market_values(data, prices=("ltp", "open", "high", "low", "close"))
         save_override(exchange, symboltoken, data.get("mode", "YAHOO"), values)
     except (TypeError, ValueError):
         return market_redirect(exchange, symboltoken, "Enter valid numeric market values.")
@@ -579,8 +567,7 @@ def reset_state(conn, action):
         for table in ("order_events", "trades", "orders", "gtt_rules", "sessions", "accounts", "users", "fault_events", "audit_log", "symbol_mappings"):
             conn.execute(f"DELETE FROM {table}")
         conn.execute("UPDATE fault_state SET mode='', started_at=NULL, ends_at=NULL WHERE id=1")
-        conn.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
-                     ("DUMMY001", password_hash("password"), "DUMMY_API_KEY", "123456", "Local Test User", "dummy@example.test", "9000000000"))
+        conn.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?, 1)", default_user())
         conn.execute("INSERT INTO accounts(client_code) VALUES ('DUMMY001')")
         conn.executemany("INSERT INTO symbol_mappings(exchange, tradingsymbol, symboltoken, yahoo_symbol) VALUES (?, ?, ?, ?)", DEFAULT_MAPPINGS)
     record_audit(conn, "reset." + action, RESETS[action][0])

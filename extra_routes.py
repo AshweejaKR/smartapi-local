@@ -2,12 +2,12 @@
 import hashlib
 import json
 import math
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from auth import active_session, payload
 from charges import CHARGE_FIELDS, calculate_charges
 from common import connect, fail, failed, ok
-from market import list_mappings
+from market import INTERVALS, list_mappings
 from portfolio import order_view
 
 
@@ -223,8 +223,7 @@ async def oi_data(request):
     try:
         start = datetime.strptime(data["fromdate"], "%Y-%m-%d %H:%M")
         end = datetime.strptime(data["todate"], "%Y-%m-%d %H:%M")
-        step = {"ONE_MINUTE": 1, "THREE_MINUTE": 3, "FIVE_MINUTE": 5, "TEN_MINUTE": 10,
-                "FIFTEEN_MINUTE": 15, "THIRTY_MINUTE": 30, "ONE_HOUR": 60, "ONE_DAY": 1440}[str(data["interval"]).upper()]
+        step = INTERVALS[str(data["interval"]).upper()][2]
         if start > end:
             raise ValueError
     except (KeyError, TypeError, ValueError):
@@ -233,7 +232,7 @@ async def oi_data(request):
     values, cursor = [], start
     while cursor <= end and len(values) < 2000:
         values.append({"time": cursor.strftime("%Y-%m-%dT%H:%M:00+05:30"), "oi": seed % 100000 + len(values) * 125})
-        cursor += timedelta(minutes=step)
+        cursor += step
     return ok(values)
 
 
@@ -397,6 +396,7 @@ async def intraday(request, exchange):
     return ok([{"exchange": exchange, "SymbolName": name, "Multiplier": "5.0" if name != "NIFTY" else "1.0"} for name in names])
 
 HANDLERS = {
+    "/rest/secure/angelbroking/order/v1/details/{order_id}": individual_order_details,
     "/rest/secure/angelbroking/order/v1/convertPosition": convert_position,
     "/gtt-service/rest/secure/angelbroking/gtt/v1/createRule": gtt_create,
     "/gtt-service/rest/secure/angelbroking/gtt/v1/modifyRule": gtt_modify,

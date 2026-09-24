@@ -28,13 +28,13 @@ def init_auth():
             "access_expires_at INTEGER NOT NULL, refresh_expires_at INTEGER NOT NULL, "
             "active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)"
         )
-        conn.execute(
-            "INSERT OR IGNORE INTO users VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
-            (
-                "DUMMY001", password_hash("password"), "DUMMY_API_KEY", "123456",
-                "Local Test User", "dummy@example.test", "9000000000",
-            ),
-        )
+        conn.execute("INSERT OR IGNORE INTO users VALUES (?, ?, ?, ?, ?, ?, ?, 1)", default_user())
+
+
+def default_user():
+    """Seed user row restored on first start and by the full admin reset."""
+    return ("DUMMY001", password_hash("password"), "DUMMY_API_KEY", "123456",
+            "Local Test User", "dummy@example.test", "9000000000")
 
 
 def invalidate_sessions(client_code):

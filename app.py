@@ -134,6 +134,8 @@ CORE_HANDLERS = {
     "/rest/secure/angelbroking/order/v1/cancelOrder": cancel_order,
     "/rest/secure/angelbroking/user/v1/getRMS": rms_limit,
     "/rest/secure/angelbroking/order/v1/getPosition": positions,
+    "/rest/secure/angelbroking/portfolio/v1/getHolding": holdings,
+    "/rest/secure/angelbroking/portfolio/v1/getAllHolding": lambda request: holdings(request, True),
 }
 
 MARKET_PROXY_PATHS = {
@@ -214,16 +216,7 @@ async def dispatch_rest(request: Request):
     path = request.scope["route"].path
     if proxy_selected(path):
         return await angel_response(request, path)
-    if handler := CORE_HANDLERS.get(path):
-        return await handler(request)
-    if path in {
-        "/rest/secure/angelbroking/portfolio/v1/getHolding",
-        "/rest/secure/angelbroking/portfolio/v1/getAllHolding",
-    }:
-        return await holdings(request, path.endswith("getAllHolding"))
-    if path == "/rest/secure/angelbroking/order/v1/details/{order_id}":
-        return await extra_routes.individual_order_details(request)
-    return await extra_routes.HANDLERS[path](request)
+    return await (CORE_HANDLERS.get(path) or extra_routes.HANDLERS[path])(request)
 
 
 async def dispatch_unknown_rest(request: Request):
