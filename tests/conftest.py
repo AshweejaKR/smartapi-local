@@ -1,6 +1,4 @@
 ﻿"""Real HTTP fixtures; the official SDK and its transport are never patched."""
-from datetime import datetime
-from pathlib import Path
 import socket
 import sqlite3
 import threading

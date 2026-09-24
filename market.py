@@ -437,22 +437,7 @@ class MarketDataService:
         selected = configured_source("market_data_source")
         if selected is None:
             return DUMMY_PROVIDER.candles(interval, end)
-        if selected == "angelone":
-            from angelone_proxy import PROXY, AngelOneError
-
-            try:
-                reply = PROXY.forward(
-                    "/rest/secure/angelbroking/historical/v1/getCandleData",
-                    {"exchange": exchange, "symboltoken": symboltoken, "interval": interval,
-                     "fromdate": start.strftime("%Y-%m-%d %H:%M"),
-                     "todate": end.strftime("%Y-%m-%d %H:%M")},
-                )
-                result = reply.json()
-                if not isinstance(result, dict) or not result.get("status"):
-                    raise AngelOneError("Angel One candle request failed")
-                return result.get("data") or []
-            except AngelOneError as exc:
-                raise MarketDataError(str(exc), "AB2001", 503) from exc
+        # angelone candle requests are proxied in app.dispatch_rest and never reach here.
         item = self._item(exchange, symboltoken)
         if self.source(item["exchange"], item["symboltoken"]) == "HIJACK":
             rows = override_candles(item["exchange"], item["symboltoken"], start, end)

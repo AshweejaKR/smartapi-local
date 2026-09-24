@@ -1,4 +1,3 @@
-from pathlib import Path
 import sqlite3
 
 from fastapi.testclient import TestClient
@@ -6,7 +5,6 @@ import yaml
 
 import angelone_proxy
 import app as app_module
-import market
 
 
 LOGIN = {

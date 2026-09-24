@@ -6,7 +6,6 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from auth import active_session, failed, payload

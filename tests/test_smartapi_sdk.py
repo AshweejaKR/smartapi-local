@@ -7,7 +7,6 @@ from SmartApi import SmartConnect
 
 from charges import DEFAULTS
 from conftest import Ticker
-import market
 
 
 ORDER = {
