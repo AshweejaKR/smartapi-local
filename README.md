@@ -37,7 +37,7 @@ All three `angelone` sources enable transparent proxy. A partial Angel One setup
 
 ```text
 python -m pip install -r requirements-dev.txt
-python -m pytest -q --ignore=test_smartapi_local.py
+python -m pytest -q
 ```
 
-Expected: 160 passed, 1 skipped. Run `python test_smartapi_local.py` only for real-versus-local comparison; it hides secrets.
+Expected: 160 passed, 1 skipped.
