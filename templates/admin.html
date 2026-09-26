@@ -9,7 +9,8 @@
 <section><h2>Current funds <a href="/admin/account">Manage</a></h2>
 {{ table(accounts, ['client_code', 'available_balance', 'used_funds', 'available_cash', 'total_charges']) }}</section>
 <section><h2>Market source <a href="/admin/market">Manage</a></h2>
-{{ table(symbols, ['exchange', 'tradingsymbol', 'mode', 'ltp', 'volume']) }}</section>
+{{ table(hijacks, ['exchange', 'tradingsymbol', 'symboltoken', 'mode', 'ltp', 'volume', 'candles']) }}
+<p class="muted">Rows are active HIJACK controls; other instruments use the configured provider.</p></section>
 </div>
 {% for section in sections %}
 <section><h2>{{ section.title }} ({{ section.count }}) <a href="/admin/monitor/{{ section.kind }}">View all</a></h2>

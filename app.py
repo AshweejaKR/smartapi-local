@@ -5,16 +5,17 @@ import os
 from pathlib import Path
 import sys
 
-from admin import init_admin, record_audit, router as admin_router
+from admin import init_admin, router as admin_router
 import angelone_proxy
-from angelone_proxy import AngelOneRemoteError, PROXY
 from auth import active_session, generate_tokens, init_auth, login, logout, payload, profile
 from charges import init_charges
-from common import connect, fail, failed, init_common, ok
+from common import connect, fail, failed, init_common, ok, record_audit
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from fault import active_fault, fault_response, init_faults, slow_delay_seconds
-from market import candle_data, init_market, ltp_data, market_data
+import instrument_master
+from market import candle_data, hijacked_request, init_market, ltp_data, market_data
+import market_controls
 from orders import (
     cancel_order, init_orders, modify_order, order_checker, place_order, stop_checker,
 )
@@ -22,7 +23,7 @@ import extra_routes
 from extra_routes import init_extra_routes
 from portfolio import holdings, init_portfolio, order_book, positions, rms_limit, trade_book
 from rate_limit import client_code_for, init_rate_limits, limiter
-from server_config import init_config, is_angel, transparent_angel_proxy_enabled
+from server_config import client_auth, init_config, is_angel, uses_internal_login
 
 
 BASE_DIR = Path(__file__).parent
@@ -33,6 +34,7 @@ def init_db():
     """Create the local database and current phase tables."""
     init_config(BASE_DIR)
     init_common(DB_PATH)
+    angelone_proxy.reset()
     with connect() as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS server_meta "
@@ -44,6 +46,7 @@ def init_db():
     init_auth()
     init_portfolio()
     init_admin()
+    instrument_master.init_instruments()
     init_market()
     with connect() as conn:
         init_charges(conn)
@@ -170,64 +173,73 @@ def proxy_selected(path):
     return path in ACCOUNT_PROXY_PATHS and is_angel("account_data")
 
 
-async def angel_response(request, path):
-    if active_session(request) is None:
+def reply_response(reply):
+    return Response(content=reply.content, status_code=reply.status_code,
+                    headers={"content-type": reply.content_type})
+
+
+async def angel_response(request, path, data, merge=None):
+    """Forward to Angel One; None means serve locally (market fallback to Yahoo)."""
+    session = active_session(request)
+    if session is None:
+        return failed("Invalid or expired token", 403)
+    real = client_auth() == "real"
+    broker = angelone_proxy.session_for(session["id"]) if real else angelone_proxy.PROXY
+    if broker is None:
         return failed("Invalid or expired token", 403)
     try:
-        data = await payload(request)
-        result = await asyncio.to_thread(
-            PROXY.forward, path, data, request.path_params.get("order_id"),
+        reply = await asyncio.to_thread(
+            broker.forward, path, data, request.path_params.get("order_id"),
         )
-        return Response(
-            content=result.content, status_code=result.status_code,
-            headers={"content-type": result.content_type},
-        )
-    except AngelOneRemoteError as exc:
-        return Response(
-            content=exc.reply.content, status_code=exc.reply.status_code,
-            headers={"content-type": exc.reply.content_type},
-        )
+        if merge is not None:
+            reply = await asyncio.to_thread(merge, reply)
+        return reply_response(reply)
+    except angelone_proxy.AngelOneLoginError:
+        if path in MARKET_PROXY_PATHS and not is_angel("market_data_source"):
+            return None
+    except angelone_proxy.AngelOneSessionExpired:
+        if real:
+            with connect() as conn:
+                conn.execute("UPDATE sessions SET active=0 WHERE id=?", (session["id"],))
+            angelone_proxy.drop_session(session["id"])
+            return failed("Invalid or expired token", 403)
     except Exception:
-        return fail("Angel One request is unavailable", "AB2001", 503)
-
-
-async def transparent_angel_response(request):
-    """Return the real broker response for an untouched client request."""
-    try:
-        result = await asyncio.to_thread(
-            angelone_proxy.forward_transparent,
-            request.method,
-            request.url.path,
-            request.scope["query_string"].decode("latin-1"),
-            dict(request.headers),
-            await request.body(),
-        )
-        return Response(
-            content=result.content, status_code=result.status_code,
-            headers={"content-type": result.content_type},
-        )
-    except Exception:
-        return fail("Angel One request is unavailable", "AB2001", 503)
+        pass
+    return fail("Angel One request is unavailable", "AB2001", 503)
 
 
 async def dispatch_rest(request: Request):
-    if transparent_angel_proxy_enabled():
-        return await transparent_angel_response(request)
     path = request.scope["route"].path
     if proxy_selected(path):
-        return await angel_response(request, path)
+        data, merge = await payload(request), None
+        if path in MARKET_PROXY_PATHS:  # local HIJACK controls win over the broker
+            data, merge = await asyncio.to_thread(hijacked_request, path, data)
+        response = None if data is None else await angel_response(request, path, data, merge)
+        if response is not None:
+            return response
     return await (CORE_HANDLERS.get(path) or extra_routes.HANDLERS[path])(request)
 
 
 async def dispatch_unknown_rest(request: Request):
-    if transparent_angel_proxy_enabled():
-        return await transparent_angel_response(request)
     return fail("Endpoint is not supported", "AB1000", 404)
+
+
+def startup_checks():
+    """Daily instrument refresh, then the internal broker login when needed."""
+    _, message = instrument_master.refresh_if_stale()
+    print(f"Instrument master: {message}")
+    if uses_internal_login():
+        try:
+            angelone_proxy.PROXY.current()
+            print("Angel One: internal login succeeded")
+        except angelone_proxy.AngelOneError as exc:
+            print(f"Angel One: {exc}; market data uses Yahoo for this process")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    await asyncio.to_thread(startup_checks)
     if os.getenv("SMARTAPI_STARTUP_BANNER", "1").lower() not in {"0", "false", "no"}:
         server_addresses()
     checker = asyncio.create_task(order_checker())
@@ -239,12 +251,12 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Local SmartAPI", lifespan=lifespan)
 app.include_router(admin_router)
+app.include_router(market_controls.router)
 
 
 @app.middleware("http")
 async def smartapi_faults(request: Request, call_next):
-    if (not transparent_angel_proxy_enabled()
-            and request.url.path.startswith(("/rest/", "/gtt-service/rest/"))):
+    if request.url.path.startswith(("/rest/", "/gtt-service/rest/")):
         fault = active_fault()
         if fault:
             request.state.fault_mode = fault["mode"]
@@ -257,8 +269,7 @@ async def smartapi_faults(request: Request, call_next):
 
 @app.middleware("http")
 async def smartapi_rate_limit(request: Request, call_next):
-    if (not transparent_angel_proxy_enabled()
-            and request.url.path.startswith(("/rest/", "/gtt-service/rest/"))):
+    if request.url.path.startswith(("/rest/", "/gtt-service/rest/")):
         failure = limiter.check(request.url.path, request.state.audit_client_code)
         if failure:
             request.state.rate_limited = True

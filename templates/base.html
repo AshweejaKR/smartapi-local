@@ -30,7 +30,7 @@
   </style>
 </head>
 <body>
-  <nav><strong>Local SmartAPI</strong><a href="/admin">Dashboard</a><a href="/admin/users">Users</a><a href="/admin/account">Accounts</a><a href="/admin/market">Market</a><a href="/admin/charges">Charges</a><a href="/admin/rate-limits">Rate limits</a><a href="/admin/faults">Faults</a><a href="/admin/monitor/orders">Orders</a><a href="/admin/monitor/open-orders">Open limits</a><a href="/admin/monitor/positions">Positions</a><a href="/admin/monitor/holdings">Holdings</a><a href="/admin/monitor/trades">Trades</a><a href="/admin/audit">Audit</a><a href="/admin/resets">Resets</a><a href="/health">Health</a></nav>
+  <nav><strong>Local SmartAPI</strong><a href="/admin">Dashboard</a><a href="/admin/users">Users</a><a href="/admin/account">Accounts</a><a href="/admin/settings">Settings</a><a href="/admin/instruments">Instruments</a><a href="/admin/market">Market</a><a href="/admin/charges">Charges</a><a href="/admin/rate-limits">Rate limits</a><a href="/admin/faults">Faults</a><a href="/admin/monitor/orders">Orders</a><a href="/admin/monitor/open-orders">Open limits</a><a href="/admin/monitor/positions">Positions</a><a href="/admin/monitor/holdings">Holdings</a><a href="/admin/monitor/trades">Trades</a><a href="/admin/audit">Audit</a><a href="/admin/resets">Resets</a><a href="/health">Health</a></nav>
   {% if request.query_params.get('message') %}<p class="message">{{ request.query_params.get('message') }}</p>{% endif %}
   {% block content %}{% endblock %}
 </body>

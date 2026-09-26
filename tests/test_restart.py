@@ -46,6 +46,12 @@ def process_server(db, port, tmp_path):
                     raise AssertionError("Server process did not stop gracefully")
 
 
+def hijack(root, token, path="hijack", **body):
+    response = httpx.post(f"{root}/local/v1/market/{path}", headers={"Authorization": f"Bearer {token}"},
+                          json={"exchange": "NSE", "symboltoken": "3045", **body})
+    return response.status_code
+
+
 def test_actual_process_restart_preserves_trading_and_configuration(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     db = tmp_path / "restart.db"
@@ -57,9 +63,9 @@ def test_actual_process_restart_preserves_trading_and_configuration(tmp_path, mo
             conn.execute("UPDATE rate_limit_config SET enabled=0")
         with httpx.Client(base_url=root) as admin:
             assert admin.post("/admin/account/DUMMY001/funds", data={"action": "add", "amount": 1000}).status_code == 303
-            assert admin.post("/admin/market", data={"exchange": "NSE", "symboltoken": "3045", "mode": "HIJACK", "ltp": 100, "volume": 500}).status_code == 303
         sdk = SmartConnect(api_key="DUMMY_API_KEY", root=root)
         assert sdk.generateSession("DUMMY001", "password", "123456")["status"]
+        assert hijack(root, sdk.access_token, ltp=100, volume=500) == 200
         params = {"variety": "NORMAL", "exchange": "NSE", "tradingsymbol": "SBIN-EQ", "symboltoken": "3045",
                   "transactiontype": "BUY", "ordertype": "MARKET", "producttype": "DELIVERY",
                   "duration": "DAY", "price": 0, "quantity": 2}
@@ -87,7 +93,7 @@ def test_actual_process_restart_preserves_trading_and_configuration(tmp_path, mo
         assert restored.ltpData("NSE", "SBIN-EQ", "3045")["data"]["ltp"] == 100
         with httpx.Client(base_url=root) as admin:
             assert admin.get("/admin/logs").status_code == 200
-            assert admin.post("/admin/market", data={"exchange": "NSE", "symboltoken": "3045", "mode": "HIJACK", "ltp": 80}).status_code == 303
+        assert hijack(root, access, "ltp/set", ltp=80) == 200
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             book = restored.orderBook()["data"]

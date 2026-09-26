@@ -1,7 +1,7 @@
 """Plain Jinja simulator controls, monitoring and confirmed resets."""
+import asyncio
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
-import math
 from pathlib import Path
 import re
 import sqlite3
@@ -14,11 +14,13 @@ from fastapi.templating import Jinja2Templates
 
 from auth import default_user, invalidate_sessions, password_hash
 from charges import CHARGE_FIELDS, init_charges, pnl_values
-from common import OWNED_TABLES, connect, delete_client
+from common import OWNED_TABLES, connect, delete_client, record_audit
 from fault import LOCK as FAULT_LOCK, active_fault, clear_fault, start_fault
+import instrument_master
 from orders import free_cash
-from market import CACHE, DEFAULT_MAPPINGS, delete_candle, list_mappings, mapping_for, override_candles, save_candle, save_override
+from market import CACHE, list_hijacks, list_mappings, sync_catalog_mappings
 from rate_limit import DEFAULT_LIMITS, WINDOWS, limiter, list_limits, save_limit
+import server_config
 
 
 router = APIRouter(prefix="/admin")
@@ -66,13 +68,6 @@ def validate_user(data, require_password):
 def redirect(path, message):
     separator = "&" if "?" in path else "?"
     return RedirectResponse(f"{path}{separator}message={quote(message)}", status_code=303)
-
-
-def record_audit(conn, action, detail, client_code=""):
-    conn.execute(
-        "INSERT INTO audit_log(created_at, action, detail, client_code) VALUES (?, ?, ?, ?)",
-        (datetime.now().isoformat(timespec="seconds"), action, detail, client_code),
-    )
 
 
 def audit(action, detail, client_code=""):
@@ -146,7 +141,7 @@ async def dashboard(request: Request):
     return templates.TemplateResponse(
         request, "admin.html", {"summary": summary, "accounts": accounts,
                                "total": sum(row["available_cash"] for row in accounts),
-                               "sections": sections, "symbols": list_mappings(), "charges": charges,
+                               "sections": sections, "hijacks": list_hijacks(), "charges": charges,
                                "limits": list_limits(), "counters": limit_status(),
                                "active": fault, "entries": entries}
     )
@@ -174,80 +169,17 @@ async def audit_page(request: Request):
     return templates.TemplateResponse(request, "audit.html", {"entries": entries})
 
 
-def market_redirect(exchange, symboltoken, message):
-    return redirect(
-        f"/admin/market?symbol={quote(str(exchange) + ':' + str(symboltoken))}",
-        message,
-    )
-
-
-def optional_float(value):
-    if value is None or not value.strip():
-        return None
-    result = float(value)
-    if not math.isfinite(result):
-        raise ValueError
-    return result
-
-
-def optional_int(value):
-    if value is None or not value.strip():
-        return None
-    result = int(value)
-    if result < 0:
-        raise ValueError
-    return result
-
-
-def market_values(data, prefix="", prices=("open", "high", "low", "close")):
-    values = {key: optional_float(data.get(prefix + key)) for key in prices}
-    return {**values, "volume": optional_int(data.get(prefix + "volume"))}
+ROUTES_DOC = "https://github.com/AshweejaKR/smartapi-local/blob/main/ROUTES.md#local-market-controls"
 
 
 @router.get("/market")
 async def market_page(request: Request):
-    rows = list_mappings()
-    selected_value = request.query_params.get("symbol", "")
-    exchange, _, symboltoken = selected_value.partition(":")
-    selected = next(
-        (row for row in rows if row["exchange"] == exchange and row["symboltoken"] == symboltoken),
-        rows[0] if rows else None,
-    )
-    candles = []
-    if selected:
-        candles = override_candles(
-            selected["exchange"], selected["symboltoken"], datetime.min, datetime.max
-        ) or []
-    return templates.TemplateResponse(
-        request, "market.html", {"symbols": rows, "selected": selected, "candles": candles}
-    )
-
-
-@router.post("/market")
-async def save_market(request: Request):
-    data = await form_data(request)
-    exchange, symboltoken = data.get("exchange"), data.get("symboltoken")
-    if mapping_for(exchange, symboltoken) is None:
-        return redirect("/admin/market", "Select a valid symbol.")
-    try:
-        if data.get("action") == "delete_candle":
-            delete_candle(exchange, symboltoken, data.get("timestamp", ""))
-            audit("market.candle_deleted", f"{exchange}:{symboltoken}")
-            return market_redirect(exchange, symboltoken, "Candle deleted.")
-        if data.get("action") == "save_candle":
-            stamp = datetime.fromisoformat(data.get("timestamp", "")).replace(second=0, microsecond=0)
-            values = market_values(data, "candle_")
-            if None in values.values():
-                raise ValueError
-            save_candle(exchange, symboltoken, stamp.isoformat(), values)
-            audit("market.candle_saved", f"{exchange}:{symboltoken} {stamp.isoformat()}")
-            return market_redirect(exchange, symboltoken, "Candle saved.")
-        values = market_values(data, prices=("ltp", "open", "high", "low", "close"))
-        save_override(exchange, symboltoken, data.get("mode", "YAHOO"), values)
-    except (TypeError, ValueError):
-        return market_redirect(exchange, symboltoken, "Enter valid numeric market values.")
-    audit("market.updated", f"{exchange}:{symboltoken} {data.get('mode', 'YAHOO')}")
-    return market_redirect(exchange, symboltoken, "Market source updated.")
+    """Read-only: prices change only through the /local/v1/market REST controls."""
+    return templates.TemplateResponse(request, "market.html", {
+        "hijacks": list_hijacks(), "symbols": list_mappings(), "routes_doc": ROUTES_DOC,
+        "provider": server_config.effective_source("market_data_source") or "dummy",
+        "configured": server_config.source("market_data_source") or "dummy",
+    })
 
 
 @router.get("/charges")
@@ -529,10 +461,10 @@ RESETS = {
     "today": ("Clear today's activity", "Delete orders created today and today's trades, including trades and events belonging to those orders. Release their open reservations. Keep cash, charges, positions and holdings. Dates use the server's local clock."),
     "open-orders": ("Clear open orders", "Delete all OPEN/PENDING orders and their events, releasing reserved funds. Keep filled orders and trades."),
     "positions": ("Clear positions", "Delete all positions and holdings; clear used funds and realized P&L. Keep funded balances, charged fees, order/trade history and open-order reservations. No closing trades are created."),
-    "hijack": ("Clear HIJACK overrides", "Delete every manual quote and candle override. All symbols return to Yahoo mode."),
+    "hijack": ("Clear HIJACK overrides", "Delete every HIJACK quote and candle override. All symbols return to the configured provider."),
     "rate-limits": ("Restore rate-limit defaults", "Replace all rate-limit rules with simulator defaults and clear every request counter."),
     "charges": ("Restore charge defaults", "Restore zero-rate simulator charge defaults. Historical charges on accounts and trades remain unchanged."),
-    "full": ("Full simulator reset", "Delete all users, sessions, balances, orders, trades, positions, holdings, GTT rules, audit/fault history, market overrides and cached market data. Restore the DUMMY001 user with password password, API key DUMMY_API_KEY, TOTP 123456 and zero funds; restore default symbols, charges and rate limits. Clear any active fault and record this reset."),
+    "full": ("Full simulator reset", "Delete all users, sessions, balances, orders, trades, positions, holdings, GTT rules, audit/fault history, market overrides and cached market data. Restore the DUMMY001 user with password password, API key DUMMY_API_KEY, TOTP 123456 and zero funds; rebuild verified Yahoo symbols from the catalog and restore charges and rate limits. The cached instrument master is kept. Clear any active fault and record this reset."),
 }
 
 
@@ -569,7 +501,7 @@ def reset_state(conn, action):
         conn.execute("UPDATE fault_state SET mode='', started_at=NULL, ends_at=NULL WHERE id=1")
         conn.execute("INSERT INTO users VALUES (?, ?, ?, ?, ?, ?, ?, 1)", default_user())
         conn.execute("INSERT INTO accounts(client_code) VALUES ('DUMMY001')")
-        conn.executemany("INSERT INTO symbol_mappings(exchange, tradingsymbol, symboltoken, yahoo_symbol) VALUES (?, ?, ?, ?)", DEFAULT_MAPPINGS)
+        sync_catalog_mappings(conn)
     record_audit(conn, "reset." + action, RESETS[action][0])
 
 
@@ -598,3 +530,57 @@ async def reset_simulator(request: Request, action: str):
         clear_fault()
         CACHE.clear()
     return redirect("/admin", RESETS[action][0] + " completed.")
+
+
+def setting_rows():
+    running, saved = server_config.SETTINGS, server_config.saved_settings()
+    label = lambda value: "null" if value is None else str(value)
+    return [{"name": name, "saved": label(saved[name]), "running": label(running[name]),
+             "effective": label(server_config.effective_source(name)
+                                if name in server_config.SOURCES else running[name])}
+            for name in (*server_config.SOURCES, "client_auth", "credentials_file")]
+
+
+@router.get("/settings")
+async def settings_page(request: Request):
+    return render_settings(request)
+
+
+def render_settings(request, errors=(), status_code=200):
+    saved = server_config.saved_settings()
+    return templates.TemplateResponse(request, "settings.html", {
+        "rows": setting_rows(), "saved": saved, "choices": server_config.CHOICES,
+        "config_path": server_config.CONFIG_PATH, "fallback": server_config.market_fallback(),
+        "credentials_found": server_config.credentials_path().exists(),
+        "pending": saved != server_config.SETTINGS, "errors": list(errors),
+    }, status_code=status_code)
+
+
+@router.post("/settings")
+async def save_settings(request: Request):
+    data = await form_data(request)
+    try:
+        values = server_config.save_config(
+            {name: data.get(name) for name in server_config.DEFAULTS})
+    except ValueError as exc:
+        return render_settings(request, [str(exc)], 400)
+    audit("settings.saved", ", ".join(
+        f"{name}={'null' if values[name] is None else values[name]}" for name in server_config.DEFAULTS))
+    return redirect("/admin/settings", "Settings saved. Restart the server to apply them.")
+
+
+@router.get("/instruments")
+async def instruments_page(request: Request):
+    exchange = request.query_params.get("exchange", "NSE").upper()
+    query = request.query_params.get("q", "").strip()
+    rows = await asyncio.to_thread(instrument_master.search, exchange, query) if query else []
+    return templates.TemplateResponse(request, "instruments.html", {
+        "status": instrument_master.status(), "exchange": exchange, "query": query,
+        "rows": rows, "columns": instrument_master.FIELDS,
+    })
+
+
+@router.post("/instruments/refresh")
+async def refresh_instruments():
+    _, message = await asyncio.to_thread(instrument_master.refresh)
+    return redirect("/admin/instruments", message)

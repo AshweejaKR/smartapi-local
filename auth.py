@@ -1,4 +1,5 @@
-"""SQLite-backed fixed-TOTP authentication for the local SmartAPI server."""
+"""SQLite-backed local sessions with dummy (fixed TOTP) or real Angel One login."""
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -10,7 +11,14 @@ import uuid
 
 from fastapi import Request
 
-from common import connect, failed, ok
+import angelone_proxy
+from common import connect, fail, failed, ok, record_audit
+from server_config import client_auth
+
+
+# Placeholder stored for users created by a real login; the broker API key is never stored.
+REAL_LOGIN_API_KEY = "(angelone login)"
+LOGIN_FAILED = "Invalid client code, password, TOTP, or API key"
 
 
 def init_auth():
@@ -29,6 +37,15 @@ def init_auth():
             "active INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL)"
         )
         conn.execute("INSERT OR IGNORE INTO users VALUES (?, ?, ?, ?, ?, ?, ?, 1)", default_user())
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+        if "auth_mode" not in columns:
+            conn.execute("ALTER TABLE sessions ADD COLUMN auth_mode TEXT NOT NULL DEFAULT 'dummy'")
+        # Broker sessions live in memory only, so real-mode sessions end with the
+        # process; sessions from the other login mode end when the mode changes.
+        conn.execute(
+            "UPDATE sessions SET active=0 WHERE active=1 AND (auth_mode='real' OR auth_mode<>?)",
+            (client_auth(),),
+        )
 
 
 def default_user():
@@ -40,9 +57,14 @@ def default_user():
 def invalidate_sessions(client_code):
     """Revoke active tokens after an admin credential/status change."""
     with connect() as conn:
+        ids = [row[0] for row in conn.execute(
+            "SELECT id FROM sessions WHERE client_code = ? AND active = 1", (client_code,)
+        )]
         conn.execute(
             "UPDATE sessions SET active = 0 WHERE client_code = ?", (client_code,)
         )
+    for session_id in ids:
+        angelone_proxy.drop_session(session_id)
 
 
 def password_hash(password):
@@ -102,14 +124,30 @@ def profile_data(user):
     }
 
 
+def create_session(conn, client_code, mode):
+    """Insert a local session; returns (session id, SmartAPI token data)."""
+    session_id = str(uuid.uuid4())
+    access, refresh, feed, access_expires, refresh_expires = new_tokens(client_code)
+    conn.execute(
+        "INSERT INTO sessions (id, client_code, access_token, refresh_token, feed_token, "
+        "access_expires_at, refresh_expires_at, active, created_at, auth_mode) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        (session_id, client_code, access, refresh, feed, access_expires, refresh_expires,
+         int(time.time()), mode),
+    )
+    return session_id, {"jwtToken": access, "refreshToken": refresh, "feedToken": feed}
+
+
 async def login(request: Request):
     data = await payload(request)
     client_code = data.get("clientcode", data.get("clientCode", ""))
     password = data.get("password", "")
     if not isinstance(client_code, str) or not isinstance(password, str):
-        return failed("Invalid client code, password, TOTP, or API key")
+        return failed(LOGIN_FAILED)
     totp = str(data.get("totp", ""))
     api_key = request.headers.get("X-PrivateKey", "")
+    if client_auth() == "real":
+        return await real_login(client_code, password, totp, api_key)
     with connect() as conn:
         user = conn.execute("SELECT * FROM users WHERE client_code = ?", (client_code,)).fetchone()
         valid = user and user["enabled"] and hmac.compare_digest(user["password_hash"], password_hash(password))
@@ -117,13 +155,38 @@ async def login(request: Request):
         totp_disabled = os.getenv("SMARTAPI_DISABLE_TOTP", "").lower() in {"1", "true", "yes"}
         valid = valid and (totp_disabled or hmac.compare_digest(user["totp"].encode(), totp.encode()))
         if not valid:
-            return failed("Invalid client code, password, TOTP, or API key")
-        access, refresh, feed, access_expires, refresh_expires = new_tokens(client_code)
-        conn.execute(
-            "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
-            (str(uuid.uuid4()), client_code, access, refresh, feed, access_expires, refresh_expires, int(time.time())),
+            return failed(LOGIN_FAILED)
+        _, tokens = create_session(conn, client_code, "dummy")
+    return ok(tokens)
+
+
+async def real_login(client_code, password, totp, api_key):
+    """Validate real credentials with Angel One, then issue local tokens only."""
+    if not all((client_code, password, totp, api_key)):
+        return failed(LOGIN_FAILED)
+    with connect() as conn:
+        user = conn.execute("SELECT enabled FROM users WHERE client_code = ?", (client_code,)).fetchone()
+    if user is not None and not user["enabled"]:
+        return failed(LOGIN_FAILED)
+    try:
+        broker = await asyncio.to_thread(
+            angelone_proxy.broker_login, api_key, client_code, password, totp,
         )
-    return ok({"jwtToken": access, "refreshToken": refresh, "feedToken": feed})
+    except angelone_proxy.AngelOneLoginError as exc:
+        # Broker error codes/messages describe the failure without echoing secrets.
+        return fail(exc.broker_message or LOGIN_FAILED, exc.errorcode or "AG8001", 401)
+    except angelone_proxy.AngelOneError:
+        return fail("Angel One login is unavailable", "AB2001", 503)
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO users VALUES (?, ?, ?, '', ?, '', '', 1)",
+            (client_code, password_hash(secrets.token_urlsafe(32)), REAL_LOGIN_API_KEY, client_code),
+        )
+        conn.execute("INSERT OR IGNORE INTO accounts(client_code) VALUES (?)", (client_code,))
+        session_id, tokens = create_session(conn, client_code, "real")
+        record_audit(conn, "login.real", "Angel One credentials validated", client_code)
+    angelone_proxy.register_session(session_id, broker)
+    return ok(tokens)
 
 
 async def generate_tokens(request: Request):
@@ -165,5 +228,6 @@ async def logout(request: Request):
         return failed("Client code does not match token", 403)
     with connect() as conn:
         conn.execute("UPDATE sessions SET active = 0 WHERE id = ?", (session["id"],))
+    await asyncio.to_thread(angelone_proxy.drop_session, session["id"], True)
     return ok()
 

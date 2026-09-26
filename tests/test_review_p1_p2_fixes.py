@@ -53,23 +53,14 @@ def test_candle_timestamp_normalizes_ist():
     assert market.candle_timestamp("2026-09-08T10:00:00+05:30") == "2026-09-08T10:00:00"
 
 
-def test_market_admin_switches_and_deletes_candle(tmp_path, monkeypatch):
+def test_saved_candle_can_be_deleted_by_ist_timestamp(tmp_path, monkeypatch):
     db = tmp_path / "admin-market.db"
     monkeypatch.setattr(app_module, "DB_PATH", db)
     with TestClient(app_module.app) as client:
-        assert "<h2>NSE / NIFTYBEES-EQ</h2>" in client.get(
-            "/admin/market?symbol=NSE%3A10576"
-        ).text
-        data = {
-            "exchange": "NSE", "symboltoken": "3045", "timestamp": "2026-09-08T10:00",
-            "candle_open": 100, "candle_high": 101, "candle_low": 99,
-            "candle_close": 100, "candle_volume": 10,
-        }
-        assert client.post("/admin/market", data={**data, "action": "save_candle"}).status_code == 200
-        assert client.post("/admin/market", data={
-            "action": "delete_candle", "exchange": "NSE", "symboltoken": "3045",
-            "timestamp": "2026-09-08T10:00:00+05:30",
-        }).status_code == 200
+        assert "NIFTYBEES-EQ" in client.get("/admin/market").text
+        values = {"open": 100, "high": 101, "low": 99, "close": 100, "volume": 10}
+        market.save_candle("NSE", "3045", "2026-09-08T10:00", values)
+        assert market.delete_candle("NSE", "3045", "2026-09-08T10:00:00+05:30") == 1
     with sqlite3.connect(db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM market_override_candles").fetchone()[0] == 0
 

@@ -2,9 +2,12 @@
 from collections import OrderedDict
 import asyncio
 from copy import deepcopy
+import csv
+import json
 from datetime import datetime, timedelta
 import math
 import os
+from pathlib import Path
 import threading
 import time
 from zoneinfo import ZoneInfo
@@ -14,15 +17,20 @@ import yfinance as yf
 
 from auth import active_session, payload
 from common import connect, fail, failed, ok
-from server_config import source as configured_source
+import instrument_master
+from server_config import effective_source
 
 
 IST = ZoneInfo("Asia/Kolkata")
-DEFAULT_MAPPINGS = (
+# Tracked catalog of Phase 1 VERIFIED Yahoo symbols, keyed by exchange and Angel
+# trading symbol. Tokens come from the current instrument master, never the catalog.
+CATALOG_PATH = Path(__file__).parent / "yahoo_catalog.csv"
+YAHOO_EXCHANGES = {"NSE", "BSE"}
+# Rows seeded automatically before Phase 2; removed once so only VERIFIED
+# catalog rows are mapped automatically.
+LEGACY_SEEDS = (
     ("NSE", "SBIN-EQ", "3045", "SBIN.NS"),
     ("NSE", "RELIANCE-EQ", "2885", "RELIANCE.NS"),
-    # Angel One's current instrument master identifies NIFTYBEES with token
-    # 10576 on NSE. BSE uses its scrip code and no "-EQ" symbol suffix.
     ("NSE", "NIFTYBEES-EQ", "10576", "NIFTYBEES.NS"),
     ("BSE", "NIFTYBEES", "590103", "NIFTYBEES.BO"),
     ("NSE", "NIFTY", "99926000", "^NSEI"),
@@ -70,6 +78,13 @@ class LastKnownCache:
     def clear(self):
         with self.lock:
             self.values.clear()
+
+    def drop(self, exchange, symboltoken):
+        """Forget cached quotes and candles for one instrument."""
+        target = (str(exchange).upper(), str(symboltoken))
+        with self.lock:
+            for key in [key for key in self.values if tuple(key[1:3]) == target]:
+                del self.values[key]
 
 
 def number(value):
@@ -183,11 +198,52 @@ def init_market():
             "close REAL NOT NULL, volume INTEGER NOT NULL, "
             "PRIMARY KEY(exchange, symboltoken, timestamp))"
         )
-        conn.executemany(
-            "INSERT OR IGNORE INTO symbol_mappings "
-            "(exchange, tradingsymbol, symboltoken, yahoo_symbol) VALUES (?, ?, ?, ?)",
-            DEFAULT_MAPPINGS,
-        )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(symbol_mappings)")}
+        if "origin" not in columns:
+            conn.execute(
+                "ALTER TABLE symbol_mappings ADD COLUMN origin TEXT NOT NULL DEFAULT 'manual'"
+            )
+            conn.executemany(
+                "DELETE FROM symbol_mappings WHERE exchange=? AND tradingsymbol=? "
+                "AND symboltoken=? AND yahoo_symbol=?", LEGACY_SEEDS,
+            )
+        sync_catalog_mappings(conn)
+    if sync_catalog_mappings not in instrument_master.AFTER_REFRESH:
+        instrument_master.AFTER_REFRESH.append(sync_catalog_mappings)
+
+
+def load_catalog(path=None):
+    """(exchange, tradingsymbol, yahoo_symbol) rows; cash NSE/BSE only."""
+    path = Path(path or CATALOG_PATH)
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as handle:
+        return [
+            (row["exchange"].strip().upper(), row["tradingsymbol"].strip(), row["yahoo_symbol"].strip())
+            for row in csv.DictReader(handle)
+            if row.get("exchange", "").strip().upper() in YAHOO_EXCHANGES
+            and row.get("tradingsymbol", "").strip() and row.get("yahoo_symbol", "").strip()
+        ]
+
+
+def sync_catalog_mappings(conn):
+    """Rebuild catalog mappings with the current master token for each symbol.
+
+    Unknown or ambiguous symbols stay unmapped. Manual mappings win on conflict.
+    """
+    conn.execute("DELETE FROM symbol_mappings WHERE origin='catalog'")
+    for exchange, symbol, yahoo_symbol in load_catalog():
+        tokens = conn.execute(
+            "SELECT token, symbol FROM instruments WHERE exchange=? AND symbol=?",
+            (exchange, symbol),
+        ).fetchall()
+        if len(tokens) == 1:
+            conn.execute(
+                "INSERT OR IGNORE INTO symbol_mappings "
+                "(exchange, tradingsymbol, symboltoken, yahoo_symbol, origin) "
+                "VALUES (?, ?, ?, ?, 'catalog')",
+                (exchange, tokens[0]["symbol"], tokens[0]["token"], yahoo_symbol),
+            )
 
 
 def upsert_mapping(exchange, tradingsymbol, symboltoken, yahoo_symbol, enabled=True):
@@ -201,7 +257,7 @@ def upsert_mapping(exchange, tradingsymbol, symboltoken, yahoo_symbol, enabled=T
             "(exchange, tradingsymbol, symboltoken, yahoo_symbol, enabled) "
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(exchange, symboltoken) DO UPDATE SET "
             "tradingsymbol=excluded.tradingsymbol, yahoo_symbol=excluded.yahoo_symbol, "
-            "enabled=excluded.enabled",
+            "enabled=excluded.enabled, origin='manual'",
             (*values, int(enabled)),
         )
 
@@ -215,7 +271,7 @@ def mapping_for(exchange, symboltoken, tradingsymbol=None):
     )
     params = [str(exchange).upper(), str(symboltoken)]
     if tradingsymbol:
-        sql += " AND tradingsymbol=?"
+        sql += " AND UPPER(tradingsymbol)=?"
         params.append(str(tradingsymbol).upper())
     with connect() as conn:
         return conn.execute(sql, params).fetchone()
@@ -240,26 +296,48 @@ def override_for(exchange, symboltoken):
         ).fetchone()
 
 
-def save_override(exchange, symboltoken, mode, values):
-    mode = str(mode).upper()
-    if mode not in {"YAHOO", "HIJACK"}:
-        raise ValueError("Mode must be YAHOO or HIJACK")
-    ltp = values.get("ltp")
-    effective = ltp if ltp is not None else values.get("close")
-    if mode == "HIJACK" and effective is not None and effective <= 0:
-        raise ValueError("HIJACK LTP must be greater than zero")
+def hijack_for(exchange, symboltoken):
+    """The active HIJACK row for one instrument, or None."""
+    row = override_for(exchange, symboltoken)
+    return row if row is not None and row["mode"] == "HIJACK" else None
+
+
+def save_override(exchange, symboltoken, values):
+    """Enable or update HIJACK; callers validate values (positive, finite)."""
+    exchange, symboltoken = str(exchange).upper(), str(symboltoken)
     with connect() as conn:
         conn.execute(
             "INSERT INTO market_overrides "
             "(exchange, symboltoken, mode, ltp, volume, open, high, low, close) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(exchange, symboltoken) DO UPDATE SET mode=excluded.mode, "
+            "VALUES (?, ?, 'HIJACK', ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(exchange, symboltoken) DO UPDATE SET mode='HIJACK', "
             "ltp=excluded.ltp, volume=excluded.volume, open=excluded.open, "
             "high=excluded.high, low=excluded.low, close=excluded.close",
-            (str(exchange).upper(), str(symboltoken), mode, values.get("ltp"),
-             values.get("volume"), values.get("open"), values.get("high"),
-             values.get("low"), values.get("close")),
+            (exchange, symboltoken, values.get("ltp"), values.get("volume"), values.get("open"),
+             values.get("high"), values.get("low"), values.get("close")),
         )
+    CACHE.drop(exchange, symboltoken)
+
+
+def clear_override(exchange, symboltoken):
+    """Return to the configured provider; saved candles stay but are ignored."""
+    with connect() as conn:
+        conn.execute("DELETE FROM market_overrides WHERE exchange=? AND symboltoken=?",
+                     (str(exchange).upper(), str(symboltoken)))
+    CACHE.drop(exchange, symboltoken)
+
+
+def list_hijacks():
+    """Active hijacks with their saved-candle counts, for the read-only admin view."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT o.*, COALESCE(i.symbol, m.tradingsymbol, '') AS tradingsymbol, "
+            "(SELECT COUNT(*) FROM market_override_candles c WHERE c.exchange=o.exchange "
+            "AND c.symboltoken=o.symboltoken) AS candles FROM market_overrides o "
+            "LEFT JOIN instruments i ON i.exchange=o.exchange AND i.token=o.symboltoken "
+            "LEFT JOIN symbol_mappings m ON m.exchange=o.exchange AND m.symboltoken=o.symboltoken "
+            "WHERE o.mode='HIJACK' ORDER BY o.exchange, o.symboltoken"
+        ).fetchall()
 
 
 def candle_timestamp(value):
@@ -271,6 +349,7 @@ def candle_timestamp(value):
 
 def save_candle(exchange, symboltoken, timestamp, values):
     timestamp = candle_timestamp(timestamp)
+    CACHE.drop(exchange, symboltoken)
     with connect() as conn:
         conn.execute(
             "INSERT INTO market_override_candles "
@@ -286,13 +365,24 @@ def save_candle(exchange, symboltoken, timestamp, values):
 
 
 def delete_candle(exchange, symboltoken, timestamp):
+    """Delete one saved candle; returns the number of rows removed."""
     timestamp = candle_timestamp(timestamp)
+    CACHE.drop(exchange, symboltoken)
     with connect() as conn:
-        conn.execute(
+        return conn.execute(
             "DELETE FROM market_override_candles WHERE exchange=? AND symboltoken=? "
             "AND timestamp=?",
             (str(exchange).upper(), str(symboltoken), timestamp),
-        )
+        ).rowcount
+
+
+def delete_candles(exchange, symboltoken):
+    CACHE.drop(exchange, symboltoken)
+    with connect() as conn:
+        return conn.execute(
+            "DELETE FROM market_override_candles WHERE exchange=? AND symboltoken=?",
+            (str(exchange).upper(), str(symboltoken)),
+        ).rowcount
 
 
 def override_candles(exchange, symboltoken, start, end):
@@ -345,28 +435,32 @@ def cached(key, fetch):
 def _item(exchange, symboltoken, tradingsymbol=None):
     item = mapping_for(exchange, symboltoken, tradingsymbol)
     if item is None:
-        if configured_source("market_data_source") is None:
+        if effective_source("market_data_source") is None:
+            known = instrument_master.lookup(exchange, symboltoken) or {}
             return {
                 "exchange": str(exchange).upper(), "symboltoken": str(symboltoken),
-                "tradingsymbol": str(tradingsymbol or "").upper(), "yahoo_symbol": "",
+                "tradingsymbol": known.get("symbol") or str(tradingsymbol or "").upper(),
+                "yahoo_symbol": "",
             }
         raise MarketDataError("Failed to get symbol details", "AB1018")
     return item
 
 
-def _angel_quote(exchange, symboltoken, tradingsymbol):
-    from angelone_proxy import PROXY, AngelOneError
+def _angel_quote(exchange, symboltoken, tradingsymbol, client_code=None):
+    import angelone_proxy
 
     try:
-        reply = PROXY.forward(
+        reply = angelone_proxy.broker_for_client(client_code).forward(
             "/rest/secure/angelbroking/order/v1/getLtpData",
             {"exchange": exchange, "tradingsymbol": tradingsymbol, "symboltoken": symboltoken},
         )
         result = reply.json()
         values = result.get("data") if isinstance(result, dict) else None
         if not result or not result.get("status") or not isinstance(values, dict):
-            raise AngelOneError("Angel One market request failed")
-    except AngelOneError as exc:
+            raise angelone_proxy.AngelOneError("Angel One market request failed")
+    except angelone_proxy.AngelOneLoginError:
+        raise
+    except angelone_proxy.AngelOneError as exc:
         raise MarketDataError(str(exc), "AB2001", 503) from exc
     return {
         "exchange": str(values.get("exchange", exchange)).upper(),
@@ -389,44 +483,104 @@ def _hijack_quote(override):
     }
 
 
-def get_quote(exchange, symboltoken, tradingsymbol=None):
-    """Quote from the configured source: DUMMY, ANGELONE, HIJACK or YAHOO."""
-    selected = configured_source("market_data_source")
+def _hijack_item(exchange, symboltoken, tradingsymbol=None):
+    """Display fields for a hijacked instrument: the master symbol when known."""
+    known = instrument_master.lookup(exchange, symboltoken) or {}
+    mapped = mapping_for(exchange, symboltoken)
+    return {"exchange": str(exchange).upper(), "symboltoken": str(symboltoken),
+            "tradingsymbol": known.get("symbol") or (mapped["tradingsymbol"] if mapped else "")
+            or str(tradingsymbol or "").upper()}
+
+
+def get_quote(exchange, symboltoken, tradingsymbol=None, client_code=None):
+    """Quote from HIJACK, else the effective source: DUMMY, ANGELONE or YAHOO."""
+    from angelone_proxy import AngelOneLoginError
+
+    override = hijack_for(exchange, symboltoken)
+    if override:  # a local test control: overrides every configured source
+        return {**_hijack_item(exchange, symboltoken, tradingsymbol), **_hijack_quote(override)}
+    selected = effective_source("market_data_source")
     if selected is None:
         item = _item(exchange, symboltoken, tradingsymbol)
         return {**dict(item), **DUMMY_PROVIDER.quote(), "source": "DUMMY"}
     if selected == "angelone":
-        return _angel_quote(exchange, symboltoken, tradingsymbol or "")
+        try:
+            return _angel_quote(exchange, symboltoken, tradingsymbol or "", client_code)
+        except AngelOneLoginError as exc:
+            # The internal login failed: market data is now Yahoo for this process.
+            if effective_source("market_data_source") != "yahoo":
+                raise MarketDataError(str(exc), "AB2001", 503) from exc
     item = _item(exchange, symboltoken, tradingsymbol)
-    override = override_for(item["exchange"], item["symboltoken"])
-    if override and override["mode"] == "HIJACK":
-        quote = _hijack_quote(override)
-    else:
-        key = ("quote", item["exchange"], item["symboltoken"], item["yahoo_symbol"])
-        quote = {**cached(key, lambda: PROVIDER.quote(item["yahoo_symbol"])), "source": "YAHOO"}
+    key = ("quote", item["exchange"], item["symboltoken"], item["yahoo_symbol"])
+    quote = {**cached(key, lambda: PROVIDER.quote(item["yahoo_symbol"])), "source": "YAHOO"}
     return {**dict(item), **quote}
 
 
 def get_candles(exchange, symboltoken, interval, start, end):
-    if configured_source("market_data_source") is None:
-        return DUMMY_PROVIDER.candles(interval, end)
-    # angelone candle requests are proxied in app.dispatch_rest and never reach here.
-    item = _item(exchange, symboltoken)
-    override = override_for(item["exchange"], item["symboltoken"])
-    if override and override["mode"] == "HIJACK":
-        rows = override_candles(item["exchange"], item["symboltoken"], start, end)
-        if rows is not None:
+    override = hijack_for(exchange, symboltoken)
+    if override:
+        # Saved override candles only; never merged with provider candles.
+        rows = override_candles(exchange, symboltoken, start, end)
+        if rows:
             return rows
         quote = _hijack_quote(override)
         stamp = start.replace(tzinfo=IST).isoformat()
         return [[stamp, *(quote[key] for key in ("open", "high", "low", "close", "volume"))]]
+    if effective_source("market_data_source") is None:
+        return DUMMY_PROVIDER.candles(interval, end)
+    # angelone candle requests are proxied in app.dispatch_rest and never reach here.
+    item = _item(exchange, symboltoken)
     key = ("candles", item["exchange"], item["symboltoken"], item["yahoo_symbol"],
            interval, start.isoformat(), end.isoformat())
     return cached(key, lambda: PROVIDER.candles(item["yahoo_symbol"], interval, start, end))
 
 
-def get_effective_ltp(exchange, symboltoken, tradingsymbol=None):
-    return get_quote(exchange, symboltoken, tradingsymbol)["ltp"]
+def hijacked_request(path, data):
+    """Split a broker-bound market request: (data to forward or None, merge or None).
+
+    None as data means every requested instrument is hijacked: serve it locally.
+    """
+    if path.endswith(("/getLtpData", "/getCandleData")):
+        return (None, None) if hijack_for(data.get("exchange"), data.get("symboltoken")) else (data, None)
+    tokens = data.get("exchangeTokens")
+    if not path.endswith("/quote") or not isinstance(tokens, dict):
+        return data, None
+    local, remote = {}, {}
+    for exchange, values in tokens.items():
+        if not isinstance(values, list):
+            return data, None
+        for token in values:
+            (local if hijack_for(exchange, token) else remote).setdefault(exchange, []).append(token)
+    if not local:
+        return data, None
+    if not remote:
+        return None, None
+    mode = str(data.get("mode", "")).upper()
+
+    def merge(reply):
+        body = reply.json()
+        if not (isinstance(body, dict) and body.get("status") and isinstance(body.get("data"), dict)):
+            return reply
+        rows = [quote_view(get_quote(exchange, token), mode)
+                for exchange, values in local.items() for token in values]
+        body["data"]["fetched"] = [*(body["data"].get("fetched") or []), *rows]
+        return type(reply)(reply.status_code, json.dumps(body).encode(), reply.content_type)
+
+    return {**data, "exchangeTokens": remote}, merge
+
+
+def get_effective_ltp(exchange, symboltoken, tradingsymbol=None, client_code=None):
+    return get_quote(exchange, symboltoken, tradingsymbol, client_code)["ltp"]
+
+
+def instrument_known(exchange, symboltoken, tradingsymbol):
+    """Local-order symbol check against the effective market source."""
+    if effective_source("market_data_source") == "angelone" and instrument_master.loaded():
+        row = instrument_master.lookup(exchange, symboltoken)
+        return row is not None and row["symbol"].upper() == str(tradingsymbol).upper()
+    if effective_source("market_data_source") == "angelone":
+        return True  # no cached master: the broker validates the symbol
+    return mapping_for(exchange, symboltoken, tradingsymbol) is not None
 
 
 def market_error(exc):
