@@ -8,7 +8,7 @@ import yaml
 
 
 DEFAULTS = {
-    "market_data_source": "yahoo",
+    "market_data_source": "angelone",
     "order_data": None,
     "account_data": None,
     "client_auth": "dummy",

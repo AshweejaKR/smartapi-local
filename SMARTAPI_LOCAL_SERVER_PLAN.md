@@ -19,10 +19,12 @@ Local SmartAPI REST server. Official SDK works when only `root` changes.
 
 The active YAML file (`SMARTAPI_CONFIG_FILE`, else `default.yaml`) selects each source and the client login mode. Admin → Settings edits it atomically; changes apply on restart.
 
-- `market_data_source`: `angelone`, `yahoo` or `null` (LTP `100.05`, 25 candles).
+- `market_data_source`: `angelone` (default), `yahoo` or `null` (LTP `100.05`, 25 candles).
 - `order_data`, `account_data`: `angelone` or `null` (local SQLite).
 - `client_auth`: `dummy` (default) or `real`.
 - Real broker state stays outside local SQLite.
+
+The shipped default is market `angelone`, orders `null`, account `null`, and client authentication `dummy`.
 
 Supported with `client_auth: dummy`: A = all `angelone`; B = market and account `angelone`, orders `null`.
 

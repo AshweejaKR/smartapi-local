@@ -25,7 +25,7 @@ EC2: use `--host 0.0.0.0`, allow TCP 8000, then open `/health` or `/admin`.
 
 | Setting | Values | Default |
 |---|---|---|
-| market_data_source | `angelone` broker quotes · `yahoo` verified Yahoo symbols · `null` LTP 100.05, 25 candles | `yahoo` |
+| market_data_source | `angelone` broker quotes · `yahoo` verified Yahoo symbols · `null` LTP 100.05, 25 candles | `angelone` |
 | order_data | `angelone` real broker orders · `null` local SQLite orders | `null` |
 | account_data | `angelone` broker RMS/margin · `null` local SQLite funds | `null` |
 | client_auth | `dummy` local users · `real` Angel One credentials | `dummy` |
@@ -37,6 +37,8 @@ Example settings, both with `client_auth: dummy`:
 |---|---|---|---|
 | A | angelone | angelone | angelone |
 | B | angelone | null | angelone |
+
+The shipped default uses Angel One for market data and keeps orders and account data local. If the internal Angel One login fails, only market data falls back to Yahoo for that process.
 
 ### Client login
 

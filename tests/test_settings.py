@@ -27,10 +27,10 @@ def config(tmp_path, monkeypatch):
 
 def test_defaults_and_repository_config():
     assert server_config.validate({}) == {
-        "market_data_source": "yahoo", "order_data": None, "account_data": None,
+        "market_data_source": "angelone", "order_data": None, "account_data": None,
         "client_auth": "dummy", "credentials_file": "angelone_keys.env"}
     shipped = yaml.safe_load((ROOT / "default.yaml").read_text(encoding="utf-8"))
-    assert server_config.validate(shipped)["client_auth"] == "dummy"
+    assert server_config.validate(shipped) == server_config.validate({})
     for value in ("None", "null", None, ""):
         assert server_config.validate({"order_data": value})["order_data"] is None
 

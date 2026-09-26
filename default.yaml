@@ -1,4 +1,4 @@
-market_data_source: yahoo # angelone/yahoo/null
+market_data_source: angelone # angelone/yahoo/null
 order_data: null # angelone/null
 account_data: null # angelone/null
 client_auth: dummy # dummy/real

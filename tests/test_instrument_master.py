@@ -196,6 +196,11 @@ def test_tracked_catalog_is_compact_and_cash_only():
         assert len(rows) == sum(1 for _ in handle) - 1 > 0  # nothing filtered out
     assert {exchange for exchange, _, _ in rows} <= {"NSE", "BSE"}
     assert len({(exchange, symbol) for exchange, symbol, _ in rows}) == len(rows)
+    assert len(rows) >= 7_000
+    assert {("NSE", "RELIANCE-EQ", "RELIANCE.NS"),
+            ("NSE", "SBIN-EQ", "SBIN.NS"),
+            ("NSE", "TCS-EQ", "TCS.NS"),
+            ("NSE", "NIFTYBEES-EQ", "NIFTYBEES.NS")} <= set(rows)
     assert path.stat().st_size < 1_000_000
 
 
