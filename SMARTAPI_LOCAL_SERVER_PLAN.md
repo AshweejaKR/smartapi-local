@@ -16,6 +16,8 @@ Local SmartAPI REST server. Official SDK works when only `root` changes.
 | Mapping 3 | REST HIJACK controls: LTP set/step/percent, candle set/list/delete | DONE |
 | Admin PIN | Simple browser PIN authentication | PLANNED |
 
+Mapping phases 1–3 are complete. Admin PIN authentication is intentionally deferred to a separate future branch.
+
 ## Sources
 
 The active YAML file (`SMARTAPI_CONFIG_FILE`, else `default.yaml`) selects each source and the client login mode. Admin → Settings edits it atomically; changes apply on restart.
