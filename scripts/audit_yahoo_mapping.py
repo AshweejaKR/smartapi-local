@@ -21,13 +21,16 @@ Examples:
 
 After the Yahoo checks, Angel One FULL quotes (read-only, 50 tokens per call) are
 fetched for every Yahoo-tested candidate using angelone_keys.env, adding
-angel_ltp, angel_prev_close and price_diff(_pct) = Yahoo latest close - Angel LTP.
-Use --no-angel to skip. Run after market close for a like-for-like comparison.
+angel_ltp and angel_prev_close. price_diff(_pct) = Yahoo latest close - Angel LTP is
+filled only when both prices are from the same market date (IST); every other row
+is labelled STALE or NOT_COMPARABLE in price_check. Use --no-angel to skip.
+Progress is logged every 100 checks, then a final summary.
 """
 import argparse
 from collections import Counter, defaultdict
 import csv
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import http.client
 import json
 from pathlib import Path
@@ -43,6 +46,8 @@ import urllib.request
 MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
 CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{}?range=1mo&interval=1d"
 USER_AGENT = "Mozilla/5.0"
+IST = ZoneInfo("Asia/Kolkata")
+PROGRESS_EVERY = 100
 STATUSES = ("VERIFIED", "MISSING", "MISMATCH", "ERROR", "UNTESTED", "REVIEW", "UNSUPPORTED")
 TESTED = {"VERIFIED", "MISSING", "MISMATCH"}
 
@@ -72,7 +77,7 @@ FIELDS = ("exch_seg", "token", "symbol", "name", "instrumenttype", "expiry", "gr
           "yahoo_candidate", "status", "reason", "yahoo_symbol_returned", "yahoo_exchange",
           "yahoo_type", "yahoo_currency", "yahoo_name", "yahoo_last_close", "yahoo_last_date",
           "checked_at", "angel_ltp", "angel_prev_close", "angel_time", "price_diff", "price_diff_pct",
-          "angel_note")
+          "price_check", "angel_note")
 ANGEL_ROOT = "https://apiconnect.angelone.in"
 ANGEL_LOGIN = "/rest/auth/angelbroking/user/v1/loginByPassword"
 ANGEL_QUOTE = "/rest/secure/angelbroking/market/v1/quote"
@@ -198,7 +203,7 @@ def classify_chart(http_status, payload, yahoo_symbol, exchange, types, now, max
     if prices:
         stamp, close = prices[-1]
         details["yahoo_last_close"] = round(close, 4)
-        details["yahoo_last_date"] = datetime.fromtimestamp(stamp, timezone.utc).date().isoformat()
+        details["yahoo_last_date"] = datetime.fromtimestamp(stamp, IST).date().isoformat()
     problems = []
     if str(details["yahoo_symbol_returned"]).upper() != yahoo_symbol.upper():
         problems.append(f"returned symbol {details['yahoo_symbol_returned']!r}")
@@ -354,19 +359,38 @@ def angel_quotes(items, headers, delay, post=angel_post, sleep=time.sleep, log=p
         for row in data.get("unfetched") or []:
             quotes[(exchange, str(row.get("symbolToken")))] = {
                 "angel_note": f"unfetched: {row.get('message') or row.get('errorCode')}"}
-        log(f"Angel quotes {index + 1}/{len(batches)}: {exchange} {len(tokens)} tokens")
+    log(f"Angel quotes: {len(batches)} batches, {len(quotes)} tokens")
     return quotes
 
 
+def angel_date(value):
+    """IST market date of Angel One's exchFeedTime, e.g. '24-Sep-2026 15:59:59'."""
+    try:
+        return datetime.strptime(str(value).strip(), "%d-%b-%Y %H:%M:%S").date().isoformat()
+    except ValueError:
+        return ""
+
+
 def add_price_comparison(items, quotes):
-    """Attach Angel prices; price_diff = Yahoo latest close - Angel LTP."""
+    """Attach Angel prices; compare only observations from the same market date.
+
+    price_diff = Yahoo latest close - Angel LTP; price_diff_pct is relative to Angel.
+    """
     for item in items:
         quote = quotes.get((item["exch_seg"], item["token"]))
         if not quote:
             continue
         item.update(quote)
+        for field in ("price_diff", "price_diff_pct"):
+            item.pop(field, None)
         yahoo, angel = item.get("yahoo_last_close"), quote.get("angel_ltp")
-        if yahoo and angel:
+        yahoo_day, angel_day = item.get("yahoo_last_date", ""), angel_date(quote.get("angel_time", ""))
+        if not (yahoo and angel and yahoo_day and angel_day):
+            item["price_check"] = "NOT_COMPARABLE: price or date missing"
+        elif yahoo_day != angel_day:
+            item["price_check"] = f"STALE: Yahoo {yahoo_day} vs Angel {angel_day}"
+        else:
+            item["price_check"] = "SAME_DATE"
             item["price_diff"] = round(yahoo - angel, 4)
             item["price_diff_pct"] = round((yahoo - angel) * 100 / angel, 3)
 
@@ -399,8 +423,8 @@ def audit(rows, args, fetch=fetch_chart, now_fn=lambda: datetime.now(timezone.ut
             if handle:
                 handle.write(json.dumps(record) + "\n")
                 handle.flush()
-            log(f"[{index + 1}/{len(todo)}] {item['exch_seg']}:{item['symbol']} -> "
-                f"{item['yahoo_candidate']}: {record['status']} ({record['reason']})")
+            if (index + 1) % PROGRESS_EVERY == 0:
+                log(f"[{index + 1}/{len(todo)}] " + ", ".join(f"{k}={v}" for k, v in sorted(run.items())))
             consecutive_errors = consecutive_errors + 1 if record["status"] == "ERROR" else 0
             if consecutive_errors >= args.max_consecutive_errors:
                 run["aborted"] = 1
@@ -412,6 +436,8 @@ def audit(rows, args, fetch=fetch_chart, now_fn=lambda: datetime.now(timezone.ut
     finally:
         if handle:
             handle.close()
+    log(f"Yahoo checks done: {sum(v for k, v in run.items() if k != 'aborted')}/{len(todo)} "
+        + ", ".join(f"{k}={v}" for k, v in sorted(run.items())))
     for item in items:
         record = results.get(key(item)) if item["yahoo_candidate"] else None
         if record:
@@ -435,7 +461,9 @@ def _line(item):
     price = (f", Yahoo {item['yahoo_last_close']} on {item['yahoo_last_date']}"
              if item.get("yahoo_last_close") else "")
     if item.get("angel_ltp"):
-        price += f", Angel LTP {item['angel_ltp']} (diff {item.get('price_diff_pct', '?')}%)"
+        check = (f"diff {item['price_diff_pct']}%" if item.get("price_diff_pct") is not None
+                 else item.get("price_check") or "not compared")
+        price += f", Angel LTP {item['angel_ltp']} ({check})"
     expiry = f" exp {item['expiry']}" if item["expiry"] else ""
     return (f"- {item['exch_seg']} {item['token']} `{item['symbol']}` ({item['instrumenttype'] or 'cash'}"
             f"{expiry}){extra}: **{item['status']}** — {item['reason']}{price}")
@@ -499,7 +527,9 @@ def write_summary(items, run, candidate_count, args, path, cap=20, angel_status=
 
 def price_section(items, angel_status, cap):
     tested = [i for i in items if i["status"] in TESTED]
-    compared = [i for i in tested if i.get("price_diff_pct") is not None]
+    compared = [i for i in tested if i.get("price_check") == "SAME_DATE"]
+    stale = [i for i in tested if str(i.get("price_check", "")).startswith("STALE")]
+    other = [i for i in tested if str(i.get("price_check", "")).startswith("NOT_COMPARABLE")]
     size = lambda i: abs(i["price_diff_pct"])
     buckets = Counter("<= 0.5%" if size(i) <= .5 else "0.5-2%" if size(i) <= 2 else "> 2%" for i in compared)
     angel_only = [i for i in tested if i.get("angel_ltp") and not i.get("yahoo_last_close")]
@@ -507,13 +537,15 @@ def price_section(items, angel_status, cap):
         "", "## Yahoo vs Angel One price", "",
         f"- Angel One quotes: {angel_status}",
         "- `price_diff` = Yahoo latest daily close - Angel One LTP; `angel_prev_close` is Angel's previous-day close.",
-        "- Compare after market close: during trading, the two sources are sampled at different times.",
-        f"- Tested rows: {len(tested)}; compared: {len(compared)} — |diff| <= 0.5%: {buckets['<= 0.5%']}, "
-        f"0.5-2%: {buckets['0.5-2%']}, > 2%: {buckets['> 2%']}",
+        "- Prices are compared only when Yahoo's last close and Angel One's feed time share the same "
+        "market date (IST); other rows are STALE or NOT_COMPARABLE and have no diff.",
+        f"- Tested rows: {len(tested)}; same-date compared: {len(compared)} — |diff| <= 0.5%: "
+        f"{buckets['<= 0.5%']}, 0.5-2%: {buckets['0.5-2%']}, > 2%: {buckets['> 2%']}",
+        f"- Stale (different dates): {len(stale)}; not comparable (missing price/date): {len(other)}",
         f"- Angel One has a price but Yahoo has none: {len(angel_only)}",
         f"- Angel One note set (unfetched/error): {sum(1 for i in tested if i.get('angel_note'))}",
     ]
-    return lines + _listing("Largest price differences", sorted(compared, key=size, reverse=True), cap)
+    return lines + _listing("Largest same-date price differences", sorted(compared, key=size, reverse=True), cap)
 
 
 def parse_args(argv=None):

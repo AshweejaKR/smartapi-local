@@ -1,4 +1,5 @@
-"""Shared SQLite connection and SmartAPI response envelopes."""
+"""Shared SQLite connection, audit rows and SmartAPI response envelopes."""
+from datetime import datetime
 from pathlib import Path
 import sqlite3
 
@@ -18,6 +19,14 @@ def connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def record_audit(conn, action, detail, client_code=""):
+    """Callers pass redacted details only: never headers, bodies or tokens."""
+    conn.execute(
+        "INSERT INTO audit_log(created_at, action, detail, client_code) VALUES (?, ?, ?, ?)",
+        (datetime.now().isoformat(timespec="seconds"), action, detail, client_code),
+    )
 
 
 def delete_client(conn, client_code):

@@ -165,7 +165,7 @@ def test_angel_login_uses_credentials_file_and_rejects_failures(tmp_path):
 
 def test_angel_quotes_batch_and_price_difference():
     items = [{"exch_seg": "NSE", "token": str(n), "yahoo_candidate": f"S{n}.NS", "status": "VERIFIED",
-              "yahoo_last_close": 101.0} for n in range(60)]
+              "yahoo_last_close": 101.0, "yahoo_last_date": "2026-09-24"} for n in range(60)]
     items += [{"exch_seg": "BSE", "token": "500112", "yahoo_candidate": "SBIN.BO", "status": "MISSING"},
               {"exch_seg": "BSE", "token": "1", "yahoo_candidate": "X.BO", "status": "UNTESTED"}]
     calls = []
@@ -185,10 +185,54 @@ def test_angel_quotes_batch_and_price_difference():
     assert calls == [("BSE", 1), ("NSE", 50), ("NSE", 10), ("NSE", 10)]  # failed batch retried once
     audit_mod.add_price_comparison(items, quotes)
     assert items[0]["price_diff"] == 1.0 and items[0]["price_diff_pct"] == 1.0
+    assert items[0]["price_check"] == "SAME_DATE"
     assert items[0]["angel_prev_close"] == 99.0 and items[0]["angel_note"] == ""
     assert items[55]["angel_note"].startswith("error:") and "price_diff" not in items[55]
     assert items[60]["angel_note"] == "unfetched: Symbol not found"
     assert "angel_note" not in items[61]  # untested candidates are not quoted
+
+
+def test_prices_compare_only_on_the_same_market_date():
+    def item(token, **values):
+        return {"exch_seg": "NSE", "token": token, "symbol": "X-EQ", "instrumenttype": "", "expiry": "",
+                "yahoo_candidate": "X.NS", "status": "VERIFIED", "reason": "ok",
+                "yahoo_last_close": 105.0, "yahoo_last_date": "2026-09-24", **values}
+
+    items = [item("1"), item("2"), item("3", yahoo_last_date=""), item("4", yahoo_last_close=None)]
+    quote = {"angel_ltp": 100.0, "angel_prev_close": 99.0, "angel_time": "24-Sep-2026 15:59:59", "angel_note": ""}
+    quotes = {("NSE", "1"): quote, ("NSE", "2"): {**quote, "angel_time": "25-Sep-2026 09:20:00"},
+              ("NSE", "3"): quote, ("NSE", "4"): quote}
+    audit_mod.add_price_comparison(items, quotes)
+    same, stale, no_date, no_price = items
+    assert same["price_check"] == "SAME_DATE"
+    assert same["price_diff"] == 5.0 and same["price_diff_pct"] == 5.0  # (105 - 100) / 100
+    assert stale["price_check"] == "STALE: Yahoo 2026-09-24 vs Angel 2026-09-25"
+    assert "price_diff" not in stale and "price_diff_pct" not in stale
+    for row in (no_date, no_price):
+        assert row["price_check"].startswith("NOT_COMPARABLE") and "price_diff_pct" not in row
+    lines = "\n".join(audit_mod.price_section(items, "fetched", 20))
+    assert "same-date compared: 1" in lines and "Stale (different dates): 1" in lines
+    assert "not comparable (missing price/date): 2" in lines
+
+
+def test_yahoo_dates_use_the_indian_market_day():
+    late = datetime(2026, 9, 24, 20, tzinfo=timezone.utc)  # 01:30 IST on 25 Sep
+    payload = chart("SBIN.NS", age_days=0)
+    payload["chart"]["result"][0]["timestamp"] = [int(late.timestamp())] * 2
+    _, _, details = audit_mod.classify_chart(200, payload, "SBIN.NS", "NSI", audit_mod.CASH_TYPES,
+                                             late, 10)
+    assert details["yahoo_last_date"] == "2026-09-25"
+
+
+def test_progress_is_logged_every_100_checks_plus_summary(tmp_path):
+    master = [{"token": str(500000 + n), "symbol": f"S{n}", "name": f"S{n}", "expiry": "",
+               "instrumenttype": "", "exch_seg": "BSE"} for n in range(250)]
+    lines = []
+    audit_mod.audit(audit_mod.parse_master(json.dumps(master).encode()), args(tmp_path, "--full"),
+                    fetch=lambda s, t: (200, chart(s, exchange="BSE")), now_fn=lambda: NOW,
+                    sleep=lambda _: None, log=lines.append)
+    assert lines == ["[100/250] VERIFIED=100", "[200/250] VERIFIED=200",
+                     "Yahoo checks done: 250/250 VERIFIED=250"]
 
 
 def test_old_checkpoint_price_fields_are_renamed(tmp_path):

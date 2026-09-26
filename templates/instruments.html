@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% from "components.html" import table %}
+{% block title %}Instruments - Local SmartAPI{% endblock %}
+{% block content %}
+<h1>Instrument master</h1>
+<table>
+  <tr><th>Source URL</th><td>{{ status.source_url }}</td></tr>
+  <tr><th>Last successful refresh</th><td>{{ status.last_success_at or "never" }}</td></tr>
+  <tr><th>Cached rows</th><td>{{ status.row_count }}</td></tr>
+  <tr><th>Last attempt</th><td>{{ status.last_attempt_at or "never" }}</td></tr>
+  <tr><th>Last failure</th><td>{% if status.last_error %}<span class="danger">{{ status.last_error }}</span>{% else %}none{% endif %}</td></tr>
+</table>
+<p class="muted">Refreshed once per calendar day (IST) at startup. A failed refresh keeps the last valid cache.</p>
+<form method="post" action="/admin/instruments/refresh"><button>Refresh now</button></form>
+
+<h2>Look up</h2>
+<form method="get" action="/admin/instruments" class="inline">
+  <select name="exchange">{% for name in ["NSE", "BSE", "NFO", "BFO", "MCX", "CDS", "NCDEX", "NCO"] %}
+    <option {% if name == exchange %}selected{% endif %}>{{ name }}</option>{% endfor %}</select>
+  <input name="q" value="{{ query }}" placeholder="token or symbol prefix">
+  <button>Search</button>
+</form>
+{% if query %}{{ table(rows, columns) }}{% endif %}
+{% endblock %}

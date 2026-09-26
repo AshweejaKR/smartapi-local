@@ -32,7 +32,7 @@ def init_portfolio():
 
 def price(row):
     try:
-        return float(get_effective_ltp(row["exchange"], row["symboltoken"], row["tradingsymbol"]))
+        return float(get_effective_ltp(row["exchange"], row["symboltoken"], row["tradingsymbol"], row["client_code"]))
     except Exception:
         return float(row["last_price"])
 

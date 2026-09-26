@@ -10,8 +10,11 @@ import pytest
 from SmartApi import SmartConnect
 import uvicorn
 
+import angelone_proxy
 import app as app_module
+import instrument_master
 import market
+import offline_data
 from portfolio import api_order_status
 
 
@@ -87,12 +90,15 @@ class SDKServer:
         self.stop()
         self.start()
 
+    def control(self, path, **body):
+        """Call a /local/v1/market control as the SDK's logged-in client."""
+        response = self.http.post(f"/local/v1/market/{path}", json=body,
+                                  headers={"Authorization": f"Bearer {self.sdk.access_token}"})
+        assert response.status_code == 200, response.text
+        return response.json()["data"]
+
     def hijack(self, price, **values):
-        response = self.http.post("/admin/market", data={
-            "exchange": "NSE", "symboltoken": "3045", "mode": "HIJACK",
-            "ltp": price, "volume": 1234, **values,
-        })
-        assert response.status_code == 303
+        self.control("hijack", exchange="NSE", symboltoken="3045", ltp=price, volume=1234, **values)
 
     def wait_order(self, order_id, status="FILLED", timeout=4):
         expected = api_order_status(status)
@@ -111,6 +117,14 @@ class SDKServer:
 @pytest.fixture(autouse=True)
 def disable_startup_banner(monkeypatch):
     monkeypatch.setenv("SMARTAPI_STARTUP_BANNER", "0")
+
+
+@pytest.fixture(autouse=True)
+def offline_sources(tmp_path, monkeypatch):
+    """No test downloads the master or reaches Angel One unless it mocks that itself."""
+    monkeypatch.setattr(market, "CATALOG_PATH", offline_data.write_catalog(tmp_path / "catalog.csv"))
+    monkeypatch.setattr(instrument_master, "download", offline_data.download)
+    monkeypatch.setattr(angelone_proxy, "send", offline_data.no_network)
 
 
 @pytest.fixture

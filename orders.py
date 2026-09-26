@@ -11,7 +11,7 @@ import uuid
 from auth import active_session, payload
 from charges import TRADE_FIELDS, calculate_charges, pnl_values
 from common import connect, fail, failed, ok
-from market import MarketDataError, get_effective_ltp, mapping_for
+from market import MarketDataError, get_effective_ltp, instrument_known
 
 LOGGER = logging.getLogger("smartapi.orders")
 OPEN = ("OPEN", "PENDING")
@@ -145,15 +145,15 @@ def short_margin_percent():
 
 
 def validate_instrument(values):
-    if mapping_for(values["exchange"], values["symboltoken"], values["tradingsymbol"]) is None:
+    if not instrument_known(values["exchange"], values["symboltoken"], values["tradingsymbol"]):
         raise MarketDataError("Failed to get symbol details", "AB1018")
 
 
-def order_price(values):
+def order_price(values, client_code=None):
     if values["order_type"] == "LIMIT":
         return values["price"]
     return float(get_effective_ltp(
-        values["exchange"], values["symboltoken"], values["tradingsymbol"]
+        values["exchange"], values["symboltoken"], values["tradingsymbol"], client_code,
     ))
 
 
@@ -224,7 +224,7 @@ async def place_order(request):
     try:
         values = parse_order(await payload(request))
         validate_instrument(values)
-        price = await asyncio.to_thread(order_price, values)
+        price = await asyncio.to_thread(order_price, values, auth["client_code"])
     except ValueError as exc:
         return fail(str(exc))
     except MarketDataError as exc:
@@ -269,7 +269,7 @@ async def modify_order(request):
         )):
             raise ValueError("Order symbol and transaction side cannot be modified")
         validate_instrument(values)
-        price = await asyncio.to_thread(order_price, values)
+        price = await asyncio.to_thread(order_price, values, auth["client_code"])
     except ValueError as exc:
         return fail(str(exc))
     except MarketDataError as exc:
@@ -485,7 +485,7 @@ def check_open_orders():
             continue
         try:
             ltp = float(get_effective_ltp(
-                row["exchange"], row["symboltoken"], row["tradingsymbol"]
+                row["exchange"], row["symboltoken"], row["tradingsymbol"], row["client_code"],
             ))
         except (MarketDataError, TypeError, ValueError):
             continue

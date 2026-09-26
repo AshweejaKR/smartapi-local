@@ -122,15 +122,11 @@ def test_yahoo_hijack_quotes_and_candles(sdk_server):
     s.hijack(120, open=110, high=125, low=105, close=115)
     assert s.sdk.getMarketData("FULL", {"NSE": ["3045"]})["data"]["fetched"][0]["tradeVolume"] == 1234
     assert s.sdk.ltpData("NSE", "SBIN-EQ", "3045")["data"]["ltp"] == 120
-    assert s.http.post("/admin/market", data={
-        "action": "save_candle", "exchange": "NSE", "symboltoken": "3045",
-        "timestamp": "2026-09-08T10:00", "candle_open": 110, "candle_high": 125,
-        "candle_low": 105, "candle_close": 120, "candle_volume": 75,
-    }).status_code == 303
+    s.control("candles", exchange="NSE", symboltoken="3045", timestamp="2026-09-08T10:00",
+              open=110, high=125, low=105, close=120, volume=75)
     assert s.sdk.getCandleData(params)["data"] == [
         ["2026-09-08T10:00:00+05:30", 110., 125., 105., 120., 75]]
-    assert s.http.post("/admin/market", data={
-        "exchange": "NSE", "symboltoken": "3045", "mode": "YAHOO"}).status_code == 303
+    s.control("clear", exchange="NSE", symboltoken="3045")
     assert s.sdk.ltpData("NSE", "SBIN-EQ", "3045")["data"]["ltp"] == 100
     Ticker.fail = True
     assert s.sdk.ltpData("NSE", "SBIN-EQ", "3045")["data"]["ltp"] == 100

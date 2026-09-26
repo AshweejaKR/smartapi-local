@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Settings - Local SmartAPI{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+<p>Config file: <code>{{ config_path }}</code>. Saved changes apply after a server restart.</p>
+{% if errors %}<ul class="errors">{% for error in errors %}<li>{{ error }}</li>{% endfor %}</ul>{% endif %}
+{% if pending %}<p class="danger">Saved settings differ from the running server. Restart to apply them.</p>{% endif %}
+{% if fallback %}<p class="danger">Market data fallback: Angel One is selected, but this process uses Yahoo. Reason: {{ fallback }}. Orders and account data selected for Angel One return "broker unavailable". Restart to retry the login.</p>{% endif %}
+
+<h2>Sources</h2>
+<table>
+  <tr><th>Setting</th><th>Saved (next start)</th><th>Running</th><th>Effective now</th></tr>
+  {% for row in rows %}
+  <tr><td>{{ row.name }}</td><td>{{ row.saved }}</td><td>{{ row.running }}</td>
+    <td>{% if row.effective != row.running %}<strong class="danger">{{ row.effective }}</strong>{% else %}{{ row.effective }}{% endif %}</td></tr>
+  {% endfor %}
+</table>
+
+<h2>Edit</h2>
+<form method="post" action="/admin/settings">
+  {% for name, allowed in choices.items() %}
+  <label>{{ name }}
+    <select name="{{ name }}">
+      {% for value in allowed %}{% set text = 'null' if value is none else value %}
+      <option value="{{ text }}" {% if saved[name] == value %}selected{% endif %}>{{ text }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% endfor %}
+  <label>credentials_file <input name="credentials_file" value="{{ saved.credentials_file }}" required></label>
+  <p class="muted">Credentials file {{ "found" if credentials_found else "not found" }} (running path). Its contents are never shown.</p>
+  <button>Save settings</button>
+</form>
+
+<h2>Client login</h2>
+<ul>
+  <li><strong>dummy</strong>: clients log in with local users, e.g. DUMMY001 / password / API key DUMMY_API_KEY / TOTP 123456. Sources set to angelone use the server's credentials file.</li>
+  <li><strong>real</strong>: clients log in with their own Angel One API key, client code, password and TOTP. The server validates them with Angel One and returns local tokens; broker tokens stay in server memory.</li>
+  <li><code>order_data: angelone</code> places real broker orders.</li>
+</ul>
+{% endblock %}

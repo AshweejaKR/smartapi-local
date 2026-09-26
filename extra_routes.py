@@ -109,7 +109,7 @@ async def search_scrip(request):
         {"exchange": row["exchange"], "tradingsymbol": row["tradingsymbol"],
          "symboltoken": row["symboltoken"]}
         for row in list_mappings()
-        if row["exchange"] == exchange and query in row["tradingsymbol"]
+        if row["exchange"] == exchange and query in row["tradingsymbol"].upper()
     ]
     return ok(values)
 

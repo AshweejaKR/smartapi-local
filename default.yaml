@@ -1,4 +1,5 @@
-market_data_source: yahoo # angelone/yahoo/None
-order_data: None # angelone/None
-account_data: None # angelone/None
+market_data_source: yahoo # angelone/yahoo/null
+order_data: null # angelone/null
+account_data: null # angelone/null
+client_auth: dummy # dummy/real
 credentials_file: "angelone_keys.env"

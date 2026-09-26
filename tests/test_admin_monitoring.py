@@ -1,4 +1,4 @@
-﻿"""Admin monitoring and destructive reset regression coverage."""
+"""Admin monitoring and destructive reset regression coverage."""
 from datetime import datetime, timedelta
 import sqlite3
 
@@ -8,6 +8,7 @@ import pytest
 import admin
 import app as app_module
 import market
+import offline_data
 import orders
 from charges import DEFAULTS
 from fault import active_fault, start_fault
@@ -40,7 +41,7 @@ def rows(table):
 
 def seed(client):
     client.post("/admin/account/DUMMY001/funds", data={"action": "add", "amount": "10000"})
-    client.post("/admin/market", data={"exchange": "NSE", "symboltoken": "3045", "mode": "HIJACK", "ltp": "100", "volume": "25"})
+    market.save_override("NSE", "3045", {"ltp": 100, "volume": 25})
     today = datetime.now()
     yesterday = today - timedelta(days=1)
     with admin.connect() as conn:
@@ -223,7 +224,7 @@ def test_full_reset_restores_seed_and_revokes_tokens_then_survives_restart(clien
     assert active_fault() is None and not market.CACHE.values and not limiter.events
     assert len(rows("users")) == len(rows("accounts")) == 1
     assert rows("accounts")[0]["available_balance"] == 0
-    assert len(rows("symbol_mappings")) == len(market.DEFAULT_MAPPINGS)
+    assert len(rows("symbol_mappings")) == len(offline_data.CATALOG)
     assert [row["action"] for row in rows("audit_log")] == ["reset.full"]
     app_module.init_db()
     assert rows("accounts")[0]["available_balance"] == 0
@@ -252,9 +253,12 @@ def test_withdrawal_cannot_consume_open_reservations(client):
     assert rows("accounts") == before
 
 
-def test_market_redirect_retains_selection_and_audit_escapes_html(client):
-    response = client.post("/admin/market", data={"exchange": "NSE", "symboltoken": "2885", "mode": "HIJACK", "ltp": "123"}, follow_redirects=False)
-    assert "symbol=NSE%3A2885&message=" in response.headers["location"]
+def test_admin_market_is_read_only_and_audit_escapes_html(client):
+    seed(client)
+    assert client.post("/admin/market", data={"exchange": "NSE", "symboltoken": "3045", "ltp": "1"}).status_code == 405
+    page = client.get("/admin/market").text
+    assert "Active hijacks (1)" in page and "SBIN-EQ" in page and "/local/v1/market" in page
+    assert "<form" not in page.split("<h1>", 1)[1]
     admin.audit("test", "<script>alert(1)</script>")
     html = client.get("/admin/audit").text
     assert "<script>alert(1)</script>" not in html
