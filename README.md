@@ -7,6 +7,7 @@ Local SmartAPI REST server. Use the official SDK with this server as `root`.
 ```text
 git clone https://github.com/AshweejaKR/smartapi-local.git
 cd smartapi-local
+git switch feature/instrument-master-market-controls
 python -m venv .venv
 ```
 

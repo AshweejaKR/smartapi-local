@@ -12,8 +12,9 @@ Local SmartAPI REST server. Official SDK works when only `root` changes.
 | 13 | SDK regression and restart check | DONE |
 | 14 | Real-versus-local parity | IN PROGRESS |
 | Mapping 1 | Yahoo mapping audit of the instrument master | DONE |
-| Mapping 2 | Instrument refresh, verified Yahoo catalog, settings, dummy/real login | IN REVIEW |
-| Mapping 3 | REST HIJACK controls: LTP set/step/percent, candle set/list/delete | IN REVIEW |
+| Mapping 2 | Instrument refresh, verified Yahoo catalog, settings, dummy/real login | DONE |
+| Mapping 3 | REST HIJACK controls: LTP set/step/percent, candle set/list/delete | DONE |
+| Admin PIN | Simple browser PIN authentication | PLANNED |
 
 ## Sources
 
@@ -52,6 +53,10 @@ If the internal (`dummy`) broker login fails, effective market data is Yahoo for
 - HIJACK overrides local `getLtpData`, `quote` and `getCandleData` for one exchange/token in every market source, including Angel One (hijacked tokens are never forwarded). Nothing is written to the broker, Yahoo or the instrument master.
 - LTP set/step/percent keep explicit OHLC/volume; results must stay above zero. Candles are minute-precision IST rows; with HIJACK on, `getCandleData` returns saved candles in range or one synthesized candle, never provider candles. Clearing HIJACK keeps saved candles but ignores them.
 - State persists in SQLite; every change clears that instrument's cache and is audited without secrets.
+
+## Planned Admin PIN
+
+Implement the simple browser PIN authentication in a later branch. The approved design and acceptance criteria are in [SMARTAPI_ADMIN_PIN_PLAN.md](SMARTAPI_ADMIN_PIN_PLAN.md).
 
 ## Phase 14
 
