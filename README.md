@@ -19,6 +19,10 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8000
 
 EC2: use `--host 0.0.0.0`, allow TCP 8000, then open `/health` or `/admin`.
 
+## Planned Admin PIN
+
+The current Admin UI has no authentication. A simple PIN login is planned for a later branch; see [SMARTAPI_ADMIN_PIN_PLAN.md](SMARTAPI_ADMIN_PIN_PLAN.md). Until it is implemented, bind locally or restrict EC2 port 8000 to your IP/VPN.
+
 ## Config
 
 `default.yaml` is used unless `SMARTAPI_CONFIG_FILE` names another YAML file. Edit it, or use **Admin → Settings**, which validates the values and saves them atomically to the active file. Restart the server to apply saved settings.
