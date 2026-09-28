@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+import admin_session
 from auth import default_user, invalidate_sessions, password_hash
 from charges import CHARGE_FIELDS, init_charges, pnl_values
 from common import OWNED_TABLES, connect, delete_client, record_audit
@@ -36,6 +37,40 @@ def init_admin():
             "id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, action TEXT NOT NULL, "
             "detail TEXT NOT NULL, client_code TEXT NOT NULL DEFAULT '')"
         )
+
+
+@router.get("/login")
+async def admin_login_page(request: Request):
+    if not server_config.SETTINGS["admin_pin_enabled"] or admin_session.valid(
+        request.cookies.get(admin_session.COOKIE)
+    ):
+        return RedirectResponse("/admin", status_code=303)
+    return templates.TemplateResponse(request, "login.html", {"error": ""})
+
+
+@router.post("/login")
+async def admin_login(request: Request):
+    if not server_config.SETTINGS["admin_pin_enabled"]:
+        return RedirectResponse("/admin", status_code=303)
+    data = await form_data(request)
+    token, limited = admin_session.authenticate(data.get("pin", ""), request.client.host if request.client else "")
+    if token:
+        response = RedirectResponse("/admin", status_code=303)
+        response.set_cookie(admin_session.COOKIE, token, max_age=admin_session.TTL,
+                            httponly=True, samesite="lax", secure=request.url.scheme == "https",
+                            path="/admin")
+        return response
+    return templates.TemplateResponse(request, "login.html", {
+        "error": "Too many attempts. Try again in five minutes." if limited else "Invalid PIN."
+    }, status_code=429 if limited else 401)
+
+
+@router.post("/logout")
+async def admin_logout(request: Request):
+    admin_session.revoke(request.cookies.get(admin_session.COOKIE))
+    response = RedirectResponse("/admin/login", status_code=303)
+    response.delete_cookie(admin_session.COOKIE, path="/admin")
+    return response
 
 
 async def form_data(request):
@@ -538,7 +573,7 @@ def setting_rows():
     return [{"name": name, "saved": label(saved[name]), "running": label(running[name]),
              "effective": label(server_config.effective_source(name)
                                 if name in server_config.SOURCES else running[name])}
-            for name in (*server_config.SOURCES, "client_auth", "credentials_file")]
+            for name in (*server_config.SOURCES, "client_auth", "credentials_file", "admin_pin_enabled")]
 
 
 @router.get("/settings")
@@ -561,7 +596,8 @@ async def save_settings(request: Request):
     data = await form_data(request)
     try:
         values = server_config.save_config(
-            {name: data.get(name) for name in server_config.DEFAULTS})
+            {name: data.get(name) for name in server_config.DEFAULTS if name != "admin_pin_enabled"}
+            | {"admin_pin_enabled": data.get("admin_pin_enabled", "false")})
     except ValueError as exc:
         return render_settings(request, [str(exc)], 400)
     audit("settings.saved", ", ".join(

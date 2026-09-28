@@ -13,13 +13,13 @@ pytestmark = pytest.mark.smoke
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_B = {"market_data_source": "angelone", "order_data": "null", "account_data": "angelone",
-            "client_auth": "real", "credentials_file": "other_keys.env"}
+            "client_auth": "real", "credentials_file": "other_keys.env", "admin_pin_enabled": "false"}
 
 
 @pytest.fixture
 def config(tmp_path, monkeypatch):
     path = tmp_path / "custom.yaml"
-    path.write_text("market_data_source: yahoo\norder_data: None\naccount_data: None\n", encoding="utf-8")
+    path.write_text("market_data_source: yahoo\norder_data: None\naccount_data: None\nadmin_pin_enabled: false\n", encoding="utf-8")
     monkeypatch.setenv("SMARTAPI_CONFIG_FILE", str(path))
     monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "settings.db")
     return path
@@ -28,7 +28,7 @@ def config(tmp_path, monkeypatch):
 def test_defaults_and_repository_config():
     assert server_config.validate({}) == {
         "market_data_source": "angelone", "order_data": None, "account_data": None,
-        "client_auth": "dummy", "credentials_file": "angelone_keys.env"}
+        "client_auth": "dummy", "credentials_file": "angelone_keys.env", "admin_pin_enabled": True}
     shipped = yaml.safe_load((ROOT / "default.yaml").read_text(encoding="utf-8"))
     assert server_config.validate(shipped) == server_config.validate({})
     for value in ("None", "null", None, ""):
@@ -38,6 +38,7 @@ def test_defaults_and_repository_config():
 @pytest.mark.parametrize("field, value", [
     ("market_data_source", "bogus"), ("order_data", "yahoo"), ("account_data", "yahoo"),
     ("client_auth", "maybe"), ("credentials_file", ""),
+    ("admin_pin_enabled", "maybe"),
 ])
 def test_invalid_choices_are_rejected_and_nothing_is_written(config, field, value):
     before = config.read_bytes()
@@ -56,11 +57,11 @@ def test_settings_save_to_active_file_and_apply_after_restart(config):
         assert server_config.SETTINGS["client_auth"] == "dummy"  # running process unchanged
         assert "Saved settings differ" in client.get("/admin/settings").text
     saved = yaml.safe_load(config.read_text(encoding="utf-8"))
-    assert saved == {**CONFIG_B, "order_data": None}
+    assert saved == {**CONFIG_B, "order_data": None, "admin_pin_enabled": False}
     assert list(config.parent.glob(".smartapi-*")) == []  # atomic write left no temp file
     assert (ROOT / "default.yaml").read_bytes() == shipped
     with TestClient(app_module.app) as client:
-        assert server_config.SETTINGS == {**CONFIG_B, "order_data": None}
+        assert server_config.SETTINGS == {**CONFIG_B, "order_data": None, "admin_pin_enabled": False}
         assert server_config.credentials_path() == config.parent / "other_keys.env"
         page = client.get("/admin/settings").text
         assert "Saved settings differ" not in page and "not found" in page

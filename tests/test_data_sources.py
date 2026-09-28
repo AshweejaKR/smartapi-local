@@ -80,6 +80,7 @@ def write_config(tmp_path, market_source="angelone", order="angelone", account="
     path.write_text(yaml.safe_dump({
         "market_data_source": market_source, "order_data": order, "account_data": account,
         "client_auth": client_auth, "credentials_file": "keys.env",
+        "admin_pin_enabled": False,
     }), encoding="utf-8")
     return path
 

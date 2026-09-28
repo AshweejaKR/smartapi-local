@@ -16,6 +16,7 @@ from SmartApi import SmartConnect
 def process_server(db, port, tmp_path):
     runner = Path(__file__).with_name("sdk_server_process.py")
     env = {key: value for key, value in os.environ.items() if not key.startswith("SMARTAPI_")}
+    env["SMARTAPI_ADMIN_PIN"] = "restart-test-pin"
     with (tmp_path / "server.log").open("a", encoding="utf-8") as log:
         process = subprocess.Popen(
             [sys.executable, str(runner), str(db), str(port)], cwd=tmp_path, env=env,
@@ -62,6 +63,7 @@ def test_actual_process_restart_preserves_trading_and_configuration(tmp_path, mo
         with sqlite3.connect(db) as conn:
             conn.execute("UPDATE rate_limit_config SET enabled=0")
         with httpx.Client(base_url=root) as admin:
+            assert admin.post("/admin/login", data={"pin": "restart-test-pin"}).status_code == 303
             assert admin.post("/admin/account/DUMMY001/funds", data={"action": "add", "amount": 1000}).status_code == 303
         sdk = SmartConnect(api_key="DUMMY_API_KEY", root=root)
         assert sdk.generateSession("DUMMY001", "password", "123456")["status"]
@@ -92,6 +94,7 @@ def test_actual_process_restart_preserves_trading_and_configuration(tmp_path, mo
             assert getattr(restored, name)()["data"] == expected, name
         assert restored.ltpData("NSE", "SBIN-EQ", "3045")["data"]["ltp"] == 100
         with httpx.Client(base_url=root) as admin:
+            assert admin.post("/admin/login", data={"pin": "restart-test-pin"}).status_code == 303
             assert admin.get("/admin/logs").status_code == 200
         assert hijack(root, access, "ltp/set", ltp=80) == 200
         deadline = time.monotonic() + 5

@@ -3,3 +3,4 @@ order_data: null # angelone/null
 account_data: null # angelone/null
 client_auth: dummy # dummy/real
 credentials_file: "angelone_keys.env"
+admin_pin_enabled: true

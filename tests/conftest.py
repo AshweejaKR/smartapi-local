@@ -120,6 +120,14 @@ def disable_startup_banner(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def legacy_admin_without_pin(tmp_path, monkeypatch):
+    """Existing Admin behavior tests use the explicit local opt-out."""
+    path = tmp_path / "legacy.yaml"
+    path.write_text("admin_pin_enabled: false\n", encoding="utf-8")
+    monkeypatch.setenv("SMARTAPI_CONFIG_FILE", str(path))
+
+
+@pytest.fixture(autouse=True)
 def offline_sources(tmp_path, monkeypatch):
     """No test downloads the master or reaches Angel One unless it mocks that itself."""
     monkeypatch.setattr(market, "CATALOG_PATH", offline_data.write_catalog(tmp_path / "catalog.csv"))

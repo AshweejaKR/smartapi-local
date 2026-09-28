@@ -28,6 +28,7 @@
   </label>
   {% endfor %}
   <label>credentials_file <input name="credentials_file" value="{{ saved.credentials_file }}" required></label>
+  <label>admin_pin_enabled <input type="checkbox" name="admin_pin_enabled" value="true" {% if saved.admin_pin_enabled %}checked{% endif %}></label>
   <p class="muted">Credentials file {{ "found" if credentials_found else "not found" }} (running path). Its contents are never shown.</p>
   <button>Save settings</button>
 </form>

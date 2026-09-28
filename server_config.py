@@ -13,6 +13,7 @@ DEFAULTS = {
     "account_data": None,
     "client_auth": "dummy",
     "credentials_file": "angelone_keys.env",
+    "admin_pin_enabled": True,
 }
 CHOICES = {
     "market_data_source": ("angelone", "yahoo", None),
@@ -48,6 +49,12 @@ def validate(values):
     if not credentials or len(credentials) > 260 or any(ch in credentials for ch in "\r\n\0"):
         raise ValueError("credentials_file must be a file path")
     result["credentials_file"] = credentials
+    enabled = result["admin_pin_enabled"]
+    if isinstance(enabled, str):
+        enabled = {"true": True, "false": False}.get(enabled.strip().lower())
+    if not isinstance(enabled, bool):
+        raise ValueError("admin_pin_enabled must be true or false")
+    result["admin_pin_enabled"] = enabled
     return result
 
 

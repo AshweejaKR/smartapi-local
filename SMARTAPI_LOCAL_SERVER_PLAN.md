@@ -14,9 +14,9 @@ Local SmartAPI REST server. Official SDK works when only `root` changes.
 | Mapping 1 | Yahoo mapping audit of the instrument master | DONE |
 | Mapping 2 | Instrument refresh, verified Yahoo catalog, settings, dummy/real login | DONE |
 | Mapping 3 | REST HIJACK controls: LTP set/step/percent, candle set/list/delete | DONE |
-| Admin PIN | Simple browser PIN authentication | PLANNED |
+| Admin PIN | Simple browser PIN authentication | DONE |
 
-Mapping phases 1–3 are complete. Admin PIN authentication is intentionally deferred to a separate future branch.
+Mapping phases 1–3 and Admin PIN authentication are complete.
 
 ## Sources
 
@@ -56,9 +56,9 @@ If the internal (`dummy`) broker login fails, effective market data is Yahoo for
 - LTP set/step/percent keep explicit OHLC/volume; results must stay above zero. Candles are minute-precision IST rows; with HIJACK on, `getCandleData` returns saved candles in range or one synthesized candle, never provider candles. Clearing HIJACK keeps saved candles but ignores them.
 - State persists in SQLite; every change clears that instrument's cache and is audited without secrets.
 
-## Planned Admin PIN
+## Admin PIN
 
-Implement the simple browser PIN authentication in a later branch. The approved design and acceptance criteria are in [SMARTAPI_ADMIN_PIN_PLAN.md](SMARTAPI_ADMIN_PIN_PLAN.md).
+Browser Admin uses `SMARTAPI_ADMIN_PIN` and a 12-hour in-memory session. The approved design and acceptance criteria are in [SMARTAPI_ADMIN_PIN_PLAN.md](SMARTAPI_ADMIN_PIN_PLAN.md).
 
 ## Phase 14
 
