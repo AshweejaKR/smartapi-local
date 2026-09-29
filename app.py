@@ -6,16 +6,18 @@ from pathlib import Path
 import sys
 
 from admin import init_admin, router as admin_router
+import admin_session
 import angelone_proxy
 from auth import active_session, generate_tokens, init_auth, login, logout, payload, profile
 from charges import init_charges
 from common import connect, fail, failed, init_common, ok, record_audit
 from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi.responses import PlainTextResponse, RedirectResponse, Response
 from fault import active_fault, fault_response, init_faults, slow_delay_seconds
 import instrument_master
 from market import candle_data, hijacked_request, init_market, ltp_data, market_data
 import market_controls
+import server_config
 from orders import (
     cancel_order, init_orders, modify_order, order_checker, place_order, stop_checker,
 )
@@ -33,6 +35,7 @@ DB_PATH = BASE_DIR / "smartapi_local.db"
 def init_db():
     """Create the local database and current phase tables."""
     init_config(BASE_DIR)
+    admin_session.reset()
     init_common(DB_PATH)
     angelone_proxy.reset()
     with connect() as conn:
@@ -252,6 +255,24 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Local SmartAPI", lifespan=lifespan)
 app.include_router(admin_router)
 app.include_router(market_controls.router)
+
+
+@app.middleware("http")
+async def admin_pin_gate(request: Request, call_next):
+    path = request.scope["path"]
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    if root_path and path.startswith(root_path + "/"):
+        path = path[len(root_path):]
+    if path == "/admin" or path.startswith("/admin/"):
+        if not server_config.SETTINGS["admin_pin_enabled"]:
+            return await call_next(request)
+        if not os.getenv("SMARTAPI_ADMIN_PIN"):
+            return PlainTextResponse("Admin setup required: set SMARTAPI_ADMIN_PIN and restart.", status_code=503)
+        if path != "/admin/login" and not admin_session.valid(
+            request.cookies.get(admin_session.COOKIE)
+        ):
+            return RedirectResponse(request.url_for("admin_login_page").path, status_code=303)
+    return await call_next(request)
 
 
 @app.middleware("http")

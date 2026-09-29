@@ -17,11 +17,11 @@ python -m pip install -r requirements.txt
 python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-EC2: use `--host 0.0.0.0`, allow TCP 8000, then open `/health` or `/admin`.
+EC2: use `--host 0.0.0.0`, limit port 8000 to your IP/VPN, and use HTTPS for remote Admin access.
 
-## Planned Admin PIN
+## Admin PIN
 
-The current Admin UI has no authentication. A simple PIN login is planned for a later branch; see [SMARTAPI_ADMIN_PIN_PLAN.md](SMARTAPI_ADMIN_PIN_PLAN.md). Until it is implemented, bind locally or restrict EC2 port 8000 to your IP/VPN.
+Set `SMARTAPI_ADMIN_PIN` in the server environment before starting. `/admin` redirects to `/admin/login`; the login cookie expires after 12 hours, logout, or server restart. Without the variable, `/admin` returns a setup error while SmartAPI and `/health` keep running. `admin_pin_enabled: false` in YAML explicitly disables the Admin PIN for local use. The PIN is never saved to YAML; see [SMARTAPI_ADMIN_PIN_PLAN.md](SMARTAPI_ADMIN_PIN_PLAN.md).
 
 ## Config
 
@@ -34,6 +34,7 @@ The current Admin UI has no authentication. A simple PIN login is planned for a 
 | account_data | `angelone` broker RMS/margin · `null` local SQLite funds | `null` |
 | client_auth | `dummy` local users · `real` Angel One credentials | `dummy` |
 | credentials_file | Angel One keys used by `dummy` mode (relative to the YAML file) | `angelone_keys.env` |
+| admin_pin_enabled | `true` protects browser Admin; `false` disables PIN | `true` |
 
 Example settings, both with `client_auth: dummy`:
 
@@ -95,8 +96,8 @@ c /local/v1/market/clear       "{$I}"
 
 ```text
 python -m pip install -r requirements-dev.txt
-python -m pytest -m smoke -q   # quick: 55 passed, ~10s
-python -m pytest -q            # full offline: 223 passed, 1 skipped, ~100s
+python -m pytest -m smoke -q   # quick: 62 passed
+python -m pytest -q            # full offline: 230 passed, 1 skipped
 ```
 
 Tests are offline: the master download, Yahoo and Angel One are mocked. The skipped test needs `SMARTAPI_LIVE_YAHOO=1`. `smartapi_parity.py` calls the real broker; run it only on purpose.

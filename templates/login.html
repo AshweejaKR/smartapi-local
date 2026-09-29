@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Admin login</title></head>
+<body><h1>Admin login</h1>
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="{{ request.url_for('admin_login_page').path }}"><label>PIN <input type="password" name="pin" required autocomplete="current-password"></label><button>Login</button></form>
+</body></html>
