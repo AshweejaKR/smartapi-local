@@ -1,6 +1,7 @@
 """Browser Admin PIN only; SmartAPI client routes retain their own auth."""
 import sqlite3
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
@@ -84,3 +85,27 @@ def test_pin_can_be_explicitly_disabled(protected):
     protected.write_text("market_data_source: null\nadmin_pin_enabled: false\n", encoding="utf-8")
     with TestClient(app_module.app) as client:
         assert client.get("/admin").status_code == 200
+
+
+def test_mounted_admin_requires_pin_for_pages_and_mutations(protected):
+    app_module.init_db()
+    parent = FastAPI()
+    parent.mount("/prefix", app_module.app)
+    funds = "/prefix/admin/account/DUMMY001/funds"
+    with TestClient(parent) as client:
+        response = client.get("/prefix/admin", follow_redirects=False)
+        assert response.status_code == 303 and response.headers["location"] == "/prefix/admin/login"
+        response = client.post(funds, data={"action": "add", "amount": "100"}, follow_redirects=False)
+        assert response.status_code == 303 and response.headers["location"] == "/prefix/admin/login"
+        with sqlite3.connect(app_module.DB_PATH) as conn:
+            assert conn.execute("SELECT available_balance FROM accounts WHERE client_code='DUMMY001'").fetchone()[0] == 0
+        assert 'action="/prefix/admin/login"' in client.get("/prefix/admin/login").text
+        login = client.post("/prefix/admin/login", data={"pin": PIN}, follow_redirects=False)
+        assert login.status_code == 303 and login.headers["location"] == "/prefix/admin"
+        assert "Path=/prefix/admin" in login.headers["set-cookie"]
+        assert client.get("/prefix/admin").status_code == 200
+        assert client.post(funds, data={"action": "add", "amount": "100"}, follow_redirects=False).status_code == 303
+        with sqlite3.connect(app_module.DB_PATH) as conn:
+            assert conn.execute("SELECT available_balance FROM accounts WHERE client_code='DUMMY001'").fetchone()[0] == 100
+        assert client.post("/prefix/admin/logout", follow_redirects=False).headers["location"] == "/prefix/admin/login"
+        assert client.get("/prefix/admin", follow_redirects=False).status_code == 303

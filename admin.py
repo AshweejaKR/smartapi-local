@@ -44,21 +44,22 @@ async def admin_login_page(request: Request):
     if not server_config.SETTINGS["admin_pin_enabled"] or admin_session.valid(
         request.cookies.get(admin_session.COOKIE)
     ):
-        return RedirectResponse("/admin", status_code=303)
+        return RedirectResponse(request.url_for("dashboard").path, status_code=303)
     return templates.TemplateResponse(request, "login.html", {"error": ""})
 
 
 @router.post("/login")
 async def admin_login(request: Request):
     if not server_config.SETTINGS["admin_pin_enabled"]:
-        return RedirectResponse("/admin", status_code=303)
+        return RedirectResponse(request.url_for("dashboard").path, status_code=303)
     data = await form_data(request)
     token, limited = admin_session.authenticate(data.get("pin", ""), request.client.host if request.client else "")
     if token:
-        response = RedirectResponse("/admin", status_code=303)
+        admin_path = request.url_for("dashboard").path
+        response = RedirectResponse(admin_path, status_code=303)
         response.set_cookie(admin_session.COOKIE, token, max_age=admin_session.TTL,
                             httponly=True, samesite="lax", secure=request.url.scheme == "https",
-                            path="/admin")
+                            path=admin_path)
         return response
     return templates.TemplateResponse(request, "login.html", {
         "error": "Too many attempts. Try again in five minutes." if limited else "Invalid PIN."
@@ -68,8 +69,8 @@ async def admin_login(request: Request):
 @router.post("/logout")
 async def admin_logout(request: Request):
     admin_session.revoke(request.cookies.get(admin_session.COOKIE))
-    response = RedirectResponse("/admin/login", status_code=303)
-    response.delete_cookie(admin_session.COOKIE, path="/admin")
+    response = RedirectResponse(request.url_for("admin_login_page").path, status_code=303)
+    response.delete_cookie(admin_session.COOKIE, path=request.url_for("dashboard").path)
     return response
 
 

@@ -96,8 +96,8 @@ c /local/v1/market/clear       "{$I}"
 
 ```text
 python -m pip install -r requirements-dev.txt
-python -m pytest -m smoke -q   # quick: 61 passed
-python -m pytest -q            # full offline: 229 passed, 1 skipped
+python -m pytest -m smoke -q   # quick: 62 passed
+python -m pytest -q            # full offline: 230 passed, 1 skipped
 ```
 
 Tests are offline: the master download, Yahoo and Angel One are mocked. The skipped test needs `SMARTAPI_LIVE_YAHOO=1`. `smartapi_parity.py` calls the real broker; run it only on purpose.

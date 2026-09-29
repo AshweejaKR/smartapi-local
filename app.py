@@ -259,7 +259,10 @@ app.include_router(market_controls.router)
 
 @app.middleware("http")
 async def admin_pin_gate(request: Request, call_next):
-    path = request.url.path
+    path = request.scope["path"]
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    if root_path and path.startswith(root_path + "/"):
+        path = path[len(root_path):]
     if path == "/admin" or path.startswith("/admin/"):
         if not server_config.SETTINGS["admin_pin_enabled"]:
             return await call_next(request)
@@ -268,7 +271,7 @@ async def admin_pin_gate(request: Request, call_next):
         if path != "/admin/login" and not admin_session.valid(
             request.cookies.get(admin_session.COOKIE)
         ):
-            return RedirectResponse("/admin/login", status_code=303)
+            return RedirectResponse(request.url_for("admin_login_page").path, status_code=303)
     return await call_next(request)
 
 
